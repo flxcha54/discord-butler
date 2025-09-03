@@ -19,8 +19,9 @@ EXAMPLE_USER_IDS = [
 EXAMPLE_GUILD_ID = 123456789012345678  # Replace with actual guild ID
 
 # Custom message (you can modify this)
+# Use {user.mention} to mention the user in the message
 CUSTOM_MESSAGE = """
-Hello there!
+Hello {user.mention}!
 
 This is a custom notification message.
 You are receiving this because of recent activity in our community.

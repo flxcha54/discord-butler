@@ -21,8 +21,9 @@ intents.members = True  # Required to kick members
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Sample message to send to users (you can modify this)
+# Use {user.mention} to mention the user in the message
 SAMPLE_MESSAGE = """
-Hello! This is a notification message.
+Hello {user.mention}! This is a notification message.
 
 You are receiving this message because of recent activity in our community.
 Please review our community guidelines.
@@ -54,7 +55,9 @@ async def send_message_and_kick_users(user_ids: List[int], guild_id: int, messag
             
             # Send private message
             try:
-                await user.send(message)
+                # Format the message with user mention
+                formatted_message = message.format(user=user)
+                await user.send(formatted_message)
                 print(f"✓ Sent message to {user.name}")
             except discord.Forbidden:
                 print(f"✗ Could not send message to {user.name} (DMs disabled)")
