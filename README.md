@@ -4,7 +4,7 @@ This Discord bot script sends private messages to users and then kicks them from
 
 ## Features
 
-- Uses environment variable `DISCORD_BOT_TOKEN_2` for bot token
+- Uses hardcoded bot token (easily replaceable)
 - Sends customizable private messages to users
 - Kicks users from the guild after sending the message
 - Includes error handling and logging
@@ -29,9 +29,10 @@ This Discord bot script sends private messages to users and then kicks them from
      - Message Content Intent
      - Server Members Intent
 
-3. **Set environment variable:**
-   ```bash
-   export DISCORD_BOT_TOKEN_2="your_bot_token_here"
+3. **Set bot token:**
+   Edit `discord_bot.py` and replace `"YOUR_BOT_TOKEN_HERE"` with your actual bot token:
+   ```python
+   BOT_TOKEN = "your_actual_bot_token_here"
    ```
 
 4. **Invite the bot to your guild:**

@@ -32,16 +32,17 @@ Thank you for your understanding.
 
 async def main():
     """Main function to demonstrate bot usage."""
+    from discord_bot import BOT_TOKEN
+    
     # Check if bot token is set
-    bot_token = os.getenv("DISCORD_BOT_TOKEN_2")
-    if not bot_token:
-        print("Error: DISCORD_BOT_TOKEN_2 environment variable is not set!")
+    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        print("Error: Please replace 'YOUR_BOT_TOKEN_HERE' with your actual Discord bot token in discord_bot.py!")
         return
     
     print("Starting Discord bot...")
     
     # Start the bot in the background
-    bot_task = asyncio.create_task(bot.start(bot_token))
+    bot_task = asyncio.create_task(bot.start(BOT_TOKEN))
     
     # Wait for the bot to be ready
     await bot.wait_until_ready()

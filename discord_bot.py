@@ -10,8 +10,8 @@ import discord
 from discord.ext import commands
 from typing import List
 
-# Environment variable for bot token
-BOT_TOKEN_ENV_VAR = "DISCORD_BOT_TOKEN_2"
+# Bot token (replace with your actual bot token)
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -107,18 +107,15 @@ async def notify_and_kick_command(ctx, guild_id: int, *user_ids: int):
 
 def main():
     """Main function to run the bot."""
-    # Get bot token from environment variable
-    bot_token = os.getenv(BOT_TOKEN_ENV_VAR)
-    
-    if not bot_token:
-        print(f"Error: Environment variable {BOT_TOKEN_ENV_VAR} is not set!")
-        print("Please set the environment variable with your Discord bot token.")
+    # Check if bot token is set
+    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        print("Error: Please replace 'YOUR_BOT_TOKEN_HERE' with your actual Discord bot token!")
         return
     
-    print(f"Using bot token from environment variable: {BOT_TOKEN_ENV_VAR}")
+    print("Starting Discord bot...")
     
     try:
-        bot.run(bot_token)
+        bot.run(BOT_TOKEN)
     except discord.LoginFailure:
         print("Error: Invalid bot token!")
     except Exception as e:
