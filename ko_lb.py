@@ -129,31 +129,44 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: 
 
     intents = discord.Intents.default()
     client = discord.Client(intents=intents)
+    
+    message_sent = False
 
-    async def _send_and_close():
+    @client.event
+    async def on_ready():
+        nonlocal message_sent
         try:
             channel = client.get_channel(channel_id)
             if channel is None:
                 # Try fetching if not cached
                 channel = await client.fetch_channel(channel_id)  # type: ignore
+            
             file = None
             embed = None
             if banner_path and os.path.exists(banner_path):
                 file = discord.File(banner_path, filename=os.path.basename(banner_path))
                 embed = discord.Embed()
                 embed.set_image(url=f"attachment://{os.path.basename(banner_path)}")
+            
             if embed and file:
                 await channel.send(content=content, file=file, embed=embed)  # type: ignore
             else:
                 await channel.send(content=content)  # type: ignore
+            
+            message_sent = True
+            print("Message posted successfully!")
+        except Exception as e:
+            print(f"Error posting message: {e}")
         finally:
             await client.close()
 
-    @client.event
-    async def on_ready():
-        await _send_and_close()
-
-    await client.start(token)
+    try:
+        await client.start(token)
+    except Exception as e:
+        print(f"Error starting Discord client: {e}")
+    finally:
+        if not client.is_closed():
+            await client.close()
 
 
 def main() -> None:
