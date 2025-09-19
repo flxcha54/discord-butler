@@ -58,13 +58,7 @@ def _read_users_mapping(users_csv_path: str) -> Tuple[List[str], Dict[str, str]]
     return deduped, customer_to_discord
 
 
-def _write_player_list_csv(path: str, user_ids: List[str]) -> None:
-    """Write a player_list.csv compatible with bounty.py from provided user_ids."""
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["user_id"])  # header expected/preferred by bounty.py
-        for uid in user_ids:
-            writer.writerow([uid])
+# player_list.csv generation is no longer needed because bounty.py now reads users_list.csv directly.
 
 
 def _run_bounty_and_get_df(target_date: dt.date) -> pd.DataFrame:
@@ -177,18 +171,17 @@ def main() -> None:
     # Resolve paths
     base_dir = _script_dir()
     users_csv = os.path.join(base_dir, "users_list.csv")
-    player_list_csv = os.path.join(base_dir, "player_list.csv")
     pkos_xlsx = os.path.join(base_dir, "pkos.xlsx")
     if not os.path.exists(users_csv):
         raise SystemExit(f"Missing users_list.csv at {users_csv}")
     if not os.path.exists(pkos_xlsx):
         raise SystemExit(f"Missing pkos.xlsx at {pkos_xlsx}")
 
-    # Read users and write player_list.csv for bounty.py
-    user_ids, id_map = _read_users_mapping(users_csv)
-    if not user_ids:
-        raise SystemExit("No eligible customer_id entries found in users_list.csv")
-    _write_player_list_csv(player_list_csv, user_ids)
+    # Read users to build mapping customer_id -> discord_id for display
+    _user_ids, id_map = _read_users_mapping(users_csv)
+    if not id_map:
+        # Proceed but warn: no mapping means we will show raw IDs
+        pass
 
     # Run bounty
     df = _run_bounty_and_get_df(target_date)

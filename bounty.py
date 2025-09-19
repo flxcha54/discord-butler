@@ -116,15 +116,15 @@ def _parse_category_cell(value: object) -> Optional[float]:
 
 
 def read_player_list(script_dir: str) -> List[str]:
-    """Load allowed player user_ids from player_list.csv in the script directory.
+    """Load allowed customer_ids from users_list.csv in the script directory.
 
-    Accepts files with header; uses a column named like 'user_id' if present,
-    otherwise picks the first column. Returns user_ids as strings.
+    Accepts files with header; uses a column named 'customer_id' if present,
+    otherwise picks the first column. Returns ids as strings.
     """
-    path = os.path.join(script_dir, "player_list.csv")
+    path = os.path.join(script_dir, "users_list.csv")
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"Required file not found: {path}. Place player_list.csv next to bounty.py"
+            f"Required file not found: {path}. Place users_list.csv next to bounty.py"
         )
 
     with open(path, "r", newline="", encoding="utf-8") as f:
@@ -135,13 +135,13 @@ def read_player_list(script_dir: str) -> List[str]:
     header = [h.strip().lower() for h in rows[0]]
     data_rows = rows[1:] if any(header) else rows
 
-    # Prefer explicit 'user_id' column, otherwise fallback to first column
+    # Prefer explicit 'customer_id' column, otherwise fallback to first column
     col_idx = 0
-    if header and "user_id" in header:
-        col_idx = header.index("user_id")
+    if header and "customer_id" in header:
+        col_idx = header.index("customer_id")
     else:
         for i, name in enumerate(header):
-            if any(key in name for key in ("user", "id")):
+            if any(key in name for key in ("customer", "user", "id")):
                 col_idx = i
                 break
     user_ids: List[str] = []
@@ -583,7 +583,7 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     allowed_user_ids = read_player_list(script_dir)
     if not allowed_user_ids:
-        raise SystemExit("player_list.csv is empty or missing valid user ids")
+        raise SystemExit("users_list.csv is empty or missing valid customer ids")
 
     # Read matrix via xlwings
     # Determine sheet reference (name or index)
@@ -613,7 +613,7 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     write_csv(general_df, general_out_path)
 
     # Display summary
-    print("Filtered (player_list) rankings:\n" + df.to_string(index=False))
+    print("Filtered (users_list) rankings:\n" + df.to_string(index=False))
     print(f"\nWrote CSV: {out_path}")
     print("\nGeneral rankings (unfiltered):\n" + general_df.to_string(index=False))
     print(f"\nWrote CSV: {general_out_path}")
