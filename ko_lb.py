@@ -136,8 +136,10 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: 
                 form_data = aiohttp.FormData()
                 form_data.add_field('content', content)
                 
+                # Read file content and add to form data
                 with open(banner_path, 'rb') as f:
-                    form_data.add_field('file', f, filename=os.path.basename(banner_path))
+                    file_content = f.read()
+                form_data.add_field('file', file_content, filename=os.path.basename(banner_path))
                 
                 # Don't set Content-Type header - let aiohttp handle it for multipart/form-data
                 async with session.post(url, headers=headers, data=form_data) as response:
