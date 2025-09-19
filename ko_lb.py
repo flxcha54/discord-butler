@@ -82,10 +82,11 @@ def _run_bounty_and_get_df(target_date: dt.date) -> pd.DataFrame:
 def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, str, float]]]:
     """Build a monospaced leaderboard text and return rows used.
     Rows are tuples (rank, discord_id_str, points).
+    Shows only top 10 players.
     """
-    # Prepare rows with discord mention
+    # Prepare rows with discord mention (limit to top 10)
     rows: List[Tuple[int, str, float]] = []
-    for _, r in df.iterrows():
+    for _, r in df.head(10).iterrows():  # Only first 10 rows
         user_id = str(r.get("user_id"))
         rank = int(r.get("rank"))
         points = float(r.get("points"))
