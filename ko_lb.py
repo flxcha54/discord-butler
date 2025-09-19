@@ -132,22 +132,24 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: 
     async with aiohttp.ClientSession() as session:
         try:
             if banner_path and os.path.exists(banner_path):
-                # Send with file attachment
+                # Send with file attachment - use form data
                 form_data = aiohttp.FormData()
                 form_data.add_field('content', content)
                 
                 with open(banner_path, 'rb') as f:
                     form_data.add_field('file', f, filename=os.path.basename(banner_path))
                 
+                # Don't set Content-Type header - let aiohttp handle it for multipart/form-data
                 async with session.post(url, headers=headers, data=form_data) as response:
                     if response.status == 200:
                         print("Message with banner posted successfully!")
                     else:
                         print(f"Error posting message: {response.status} - {await response.text()}")
             else:
-                # Send text only
+                # Send text only - use JSON
+                headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
                 data = {'content': content}
-                async with session.post(url, headers=headers, json=data) as response:
+                async with session.post(url, headers=headers_json, json=data) as response:
                     if response.status == 200:
                         print("Message posted successfully!")
                     else:
