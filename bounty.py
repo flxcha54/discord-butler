@@ -404,7 +404,18 @@ def compute_rankings_for_date(
         {"user_id": list(points_by_user.keys()), "points": list(points_by_user.values())}
     )
     df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
-    df.insert(0, "rank", range(1, len(df) + 1))
+    # Assign competition ranks: ties share rank, next rank skips by tie size (1,1,3,...)
+    ranks: List[int] = []
+    last_points: Optional[float] = None
+    current_rank = 0
+    position = 0
+    for pts in df["points"].tolist():
+        position += 1
+        if last_points is None or pts != last_points:
+            current_rank = position
+            last_points = pts
+        ranks.append(current_rank)
+    df.insert(0, "rank", ranks)
     return df.reset_index(drop=True)
 
 
@@ -468,7 +479,8 @@ def compute_unfiltered_rankings_for_date(
                 user_ids.append(uid)
         user_ids = sorted(set(user_ids))
         df0 = pd.DataFrame({"user_id": user_ids, "points": [0] * len(user_ids)})
-        df0.insert(0, "rank", range(1, len(df0) + 1))
+        # All points equal -> all share rank 1 under competition ranking
+        df0.insert(0, "rank", [1] * len(df0))
         return df0
 
     col_to_category: Dict[int, float] = {c: float(categories[c]) for c in target_cols if categories[c] is not None}
@@ -497,7 +509,18 @@ def compute_unfiltered_rankings_for_date(
         {"user_id": list(points_by_user.keys()), "points": list(points_by_user.values())}
     )
     df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
-    df.insert(0, "rank", range(1, len(df) + 1))
+    # Competition ranking for ties
+    ranks: List[int] = []
+    last_points: Optional[float] = None
+    current_rank = 0
+    position = 0
+    for pts in df["points"].tolist():
+        position += 1
+        if last_points is None or pts != last_points:
+            current_rank = position
+            last_points = pts
+        ranks.append(current_rank)
+    df.insert(0, "rank", ranks)
     return df.reset_index(drop=True)
 
 
