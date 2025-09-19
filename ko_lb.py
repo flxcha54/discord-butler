@@ -80,7 +80,7 @@ def _run_bounty_and_get_df(target_date: dt.date) -> pd.DataFrame:
 
 
 def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, str, float]]]:
-    """Build a monospaced leaderboard text and return rows used.
+    """Build French leaderboard text and return rows used.
     Rows are tuples (rank, discord_id_str, points).
     Shows only top 10 players.
     """
@@ -95,30 +95,17 @@ def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str])
         display = f"<@{discord_id}>" if discord_id else f"ID:{user_id}"
         rows.append((rank, display, points))
 
-    # Build table with fixed widths
-    medal = {1: "🥇", 2: "🥈", 3: "🥉"}
-    header = f"Leaderboard for {date_str}"
-    col_r = "Rk"
-    col_u = "User"
-    col_p = "Pts"
-
-    # Compute width for user column (limit to avoid too wide)
-    user_width = max(len(col_u), *(len(u) for _, u, _ in rows))
-    user_width = min(user_width, 40)
-
-    def fmt_row(rank: int, user: str, pts: float) -> str:
-        icon = medal.get(rank, " ")
-        user_cut = user if len(user) <= user_width else user[: user_width - 1] + "…"
-        return f"{icon} {rank:>2}  {user_cut:<{user_width}}  {pts:>6.0f}"
-
-    lines = [
-        header,
-        "",
-        f"{col_r:>3}  {col_u:<{user_width}}  {col_p:>6}",
-        f"{'-'*3}  {'-'*user_width}  {'-'*6}",
-    ]
+    # Build French format
+    lines = [f"```{date_str}```", ""]
+    
     for rank, user, pts in rows:
-        lines.append(fmt_row(rank, user, pts))
+        if rank == 1:
+            lines.append(f"1er - {user} avec {pts:.0f} point(s).")
+        elif rank == 2:
+            lines.append(f"2ème - {user} avec {pts:.0f} point(s).")
+        else:
+            lines.append(f"{rank}ème - {user} avec {pts:.0f} point(s).")
+    
     text = "\n".join(lines)
     return text, rows
 
