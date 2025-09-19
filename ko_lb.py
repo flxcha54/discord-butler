@@ -115,6 +115,23 @@ def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str])
         else:
             lines.append(f"{rank}ème - {user} avec {pts:.0f} point(s).")
     
+    # Add congratulations messages
+    if len(rows) > 0:
+        lines.append("")  # Empty line before congratulations
+        
+        # First 5 users (or all if less than 5)
+        first_5 = rows[:5]
+        if first_5:
+            first_5_users = ", ".join([user for _, user, _ in first_5])
+            lines.append(f"Félicitations {first_5_users}, vous gagnez tous un ticket pour le Main Event des KO Series 50 000€ garanti de dimanche 5 octobre.")
+        
+        # 6th to 10th users (if they exist)
+        if len(rows) > 5:
+            sixth_to_tenth = rows[5:10]
+            if sixth_to_tenth:
+                sixth_to_tenth_users = ", ".join([user for _, user, _ in sixth_to_tenth])
+                lines.append(f"Bien joué {sixth_to_tenth_users}, vous gagnez tous un ticket 20€ à utiliser dans les tournois des KO Series !")
+    
     text = "\n".join(lines)
     return text, rows
 
