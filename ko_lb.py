@@ -132,18 +132,9 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: 
     async with aiohttp.ClientSession() as session:
         try:
             if banner_path and os.path.exists(banner_path):
-                # Send with file attachment and embed - use form data
+                # Send with file attachment - image will appear above text
                 form_data = aiohttp.FormData()
                 form_data.add_field('content', content)
-                
-                # Create embed with image
-                import json
-                embed = {
-                    "image": {
-                        "url": f"attachment://{os.path.basename(banner_path)}"
-                    }
-                }
-                form_data.add_field('embeds', json.dumps([embed]))
                 
                 # Read file content and add to form data
                 with open(banner_path, 'rb') as f:
