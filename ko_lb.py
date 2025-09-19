@@ -132,21 +132,29 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: 
     async with aiohttp.ClientSession() as session:
         try:
             if banner_path and os.path.exists(banner_path):
-                # Send with file attachment - image will appear above text
+                # Send banner image first (above)
                 form_data = aiohttp.FormData()
-                form_data.add_field('content', content)
                 
                 # Read file content and add to form data
                 with open(banner_path, 'rb') as f:
                     file_content = f.read()
                 form_data.add_field('file', file_content, filename=os.path.basename(banner_path))
                 
-                # Don't set Content-Type header - let aiohttp handle it for multipart/form-data
+                # Send image first
                 async with session.post(url, headers=headers, data=form_data) as response:
                     if response.status == 200:
-                        print("Message with banner posted successfully!")
+                        print("Banner image posted successfully!")
                     else:
-                        print(f"Error posting message: {response.status} - {await response.text()}")
+                        print(f"Error posting banner: {response.status} - {await response.text()}")
+                
+                # Then send the leaderboard text
+                data = {'content': content}
+                headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+                async with session.post(url, headers=headers_json, json=data) as response:
+                    if response.status == 200:
+                        print("Leaderboard text posted successfully!")
+                    else:
+                        print(f"Error posting leaderboard: {response.status} - {await response.text()}")
             else:
                 # Send text only - use JSON
                 headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
