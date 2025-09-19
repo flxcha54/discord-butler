@@ -84,12 +84,21 @@ def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str])
     Rows are tuples (rank, discord_id_str, points).
     Shows only top 10 players.
     """
-    # Prepare rows with discord mention (limit to top 10)
+    # Prepare rows with discord mention (only players with points > 0, limit to top 10)
     rows: List[Tuple[int, str, float]] = []
-    for _, r in df.head(10).iterrows():  # Only first 10 rows
+    for _, r in df.iterrows():
         user_id = str(r.get("user_id"))
         rank = int(r.get("rank"))
         points = float(r.get("points"))
+        
+        # Skip players with 0 points
+        if points <= 0:
+            continue
+            
+        # Stop at 10 players
+        if len(rows) >= 10:
+            break
+            
         discord_id = id_map.get(user_id) or id_map.get(str(int(float(user_id)))) if user_id.replace(".", "", 1).isdigit() else id_map.get(user_id)
         # Fallback to user_id if missing mapping
         display = f"<@{discord_id}>" if discord_id else f"ID:{user_id}"
