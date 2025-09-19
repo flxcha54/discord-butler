@@ -114,60 +114,62 @@ def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str])
     lines = [
         header,
         "",
-        "```",
         f"{col_r:>3}  {col_u:<{user_width}}  {col_p:>6}",
         f"{'-'*3}  {'-'*user_width}  {'-'*6}",
     ]
     for rank, user, pts in rows:
         lines.append(fmt_row(rank, user, pts))
-    lines.append("```")
     text = "\n".join(lines)
     return text, rows
 
 
 async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: str, banner_path: Optional[str]) -> None:
     import discord  # type: ignore
+    import aiohttp
 
-    intents = discord.Intents.default()
-    client = discord.Client(intents=intents)
+    # Use aiohttp directly to avoid discord.py connection issues
+    headers = {
+        'Authorization': f'Bot {token}',
+        'Content-Type': 'application/json'
+    }
     
-    message_sent = False
-
-    @client.event
-    async def on_ready():
-        nonlocal message_sent
+    # Prepare message data
+    data = {
+        'content': content
+    }
+    
+    # Add banner image if it exists
+    files = None
+    if banner_path and os.path.exists(banner_path):
+        with open(banner_path, 'rb') as f:
+            files = {
+                'file': (os.path.basename(banner_path), f.read(), 'image/png')
+            }
+    
+    url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+    
+    async with aiohttp.ClientSession() as session:
         try:
-            channel = client.get_channel(channel_id)
-            if channel is None:
-                # Try fetching if not cached
-                channel = await client.fetch_channel(channel_id)  # type: ignore
-            
-            file = None
-            embed = None
-            if banner_path and os.path.exists(banner_path):
-                file = discord.File(banner_path, filename=os.path.basename(banner_path))
-                embed = discord.Embed()
-                embed.set_image(url=f"attachment://{os.path.basename(banner_path)}")
-            
-            if embed and file:
-                await channel.send(content=content, file=file, embed=embed)  # type: ignore
+            if files:
+                # Send with file attachment
+                form_data = aiohttp.FormData()
+                form_data.add_field('content', content)
+                form_data.add_field('file', files['file'][1], filename=files['file'][0], content_type=files['file'][2])
+                
+                async with session.post(url, headers=headers, data=form_data) as response:
+                    if response.status == 200:
+                        print("Message with banner posted successfully!")
+                    else:
+                        print(f"Error posting message: {response.status} - {await response.text()}")
             else:
-                await channel.send(content=content)  # type: ignore
-            
-            message_sent = True
-            print("Message posted successfully!")
+                # Send text only
+                async with session.post(url, headers=headers, json=data) as response:
+                    if response.status == 200:
+                        print("Message posted successfully!")
+                    else:
+                        print(f"Error posting message: {response.status} - {await response.text()}")
         except Exception as e:
-            print(f"Error posting message: {e}")
-        finally:
-            await client.close()
-
-    try:
-        await client.start(token)
-    except Exception as e:
-        print(f"Error starting Discord client: {e}")
-    finally:
-        if not client.is_closed():
-            await client.close()
+            print(f"Error posting to Discord: {e}")
 
 
 def main() -> None:
