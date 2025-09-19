@@ -124,37 +124,20 @@ def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str])
 
 
 async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: str, banner_path: Optional[str]) -> None:
-    import discord  # type: ignore
     import aiohttp
 
-    # Use aiohttp directly to avoid discord.py connection issues
-    headers = {
-        'Authorization': f'Bot {token}',
-        'Content-Type': 'application/json'
-    }
-    
-    # Prepare message data
-    data = {
-        'content': content
-    }
-    
-    # Add banner image if it exists
-    files = None
-    if banner_path and os.path.exists(banner_path):
-        with open(banner_path, 'rb') as f:
-            files = {
-                'file': (os.path.basename(banner_path), f.read(), 'image/png')
-            }
-    
     url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+    headers = {'Authorization': f'Bot {token}'}
     
     async with aiohttp.ClientSession() as session:
         try:
-            if files:
+            if banner_path and os.path.exists(banner_path):
                 # Send with file attachment
                 form_data = aiohttp.FormData()
                 form_data.add_field('content', content)
-                form_data.add_field('file', files['file'][1], filename=files['file'][0], content_type=files['file'][2])
+                
+                with open(banner_path, 'rb') as f:
+                    form_data.add_field('file', f, filename=os.path.basename(banner_path))
                 
                 async with session.post(url, headers=headers, data=form_data) as response:
                     if response.status == 200:
@@ -163,6 +146,7 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: 
                         print(f"Error posting message: {response.status} - {await response.text()}")
             else:
                 # Send text only
+                data = {'content': content}
                 async with session.post(url, headers=headers, json=data) as response:
                     if response.status == 200:
                         print("Message posted successfully!")
