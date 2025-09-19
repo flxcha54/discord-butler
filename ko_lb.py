@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+import argparse
+import asyncio
+import csv
+import datetime as dt
+import os
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+
+
+# --------- Hardcoded configuration ---------
+# Set your guild and channel IDs here
+GUILD_ID: int = 123456789012345678  # TODO: replace with your guild ID
+CHANNEL_ID: int = 123456789012345678  # TODO: replace with your channel ID
+
+# File name for the banner image to display on top of the leaderboard (placed next to this script)
+BANNER_FILENAME: str = "banner.png"  # TODO: replace with your banner filename
+
+# Discord bot token is read from environment for safety
+# export DISCORD_BOT_TOKEN=... before running this script
+DISCORD_BOT_TOKEN_ENV: str = "DISCORD_BOT_TOKEN"
+
+
+def _script_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _read_users_mapping(users_csv_path: str) -> Tuple[List[str], Dict[str, str]]:
+    """Read users_list.csv and return:
+    - list of customer_ids (non-empty, not 'staff') as strings
+    - mapping from customer_id -> discord_id (string)
+    """
+    customer_ids: List[str] = []
+    customer_to_discord: Dict[str, str] = {}
+
+    with open(users_csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        # Expect columns: discord_id, customer_id, invite_url (extra columns tolerated)
+        for row in reader:
+            customer_id_raw = (row.get("customer_id") or "").strip()
+            discord_id_raw = (row.get("discord_id") or "").strip()
+            if not customer_id_raw or customer_id_raw.lower() == "staff":
+                continue
+            # Normalize: keep as-is string; bounty.py has its own normalization
+            customer_ids.append(customer_id_raw)
+            if discord_id_raw:
+                customer_to_discord[customer_id_raw] = discord_id_raw
+
+    # Deduplicate preserving order
+    seen: set = set()
+    deduped: List[str] = []
+    for cid in customer_ids:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        deduped.append(cid)
+    return deduped, customer_to_discord
+
+
+def _write_player_list_csv(path: str, user_ids: List[str]) -> None:
+    """Write a player_list.csv compatible with bounty.py from provided user_ids."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["user_id"])  # header expected/preferred by bounty.py
+        for uid in user_ids:
+            writer.writerow([uid])
+
+
+def _run_bounty_and_get_df(target_date: dt.date) -> pd.DataFrame:
+    """Invoke bounty.main programmatically to compute filtered rankings for target_date.
+    Expects bounty.py in the same directory and pkos.xlsx present alongside.
+    """
+    import importlib.util
+
+    bounty_path = os.path.join(_script_dir(), "bounty.py")
+    spec = importlib.util.spec_from_file_location("bounty", bounty_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to import bounty.py module")
+    bounty = importlib.util.module_from_spec(spec)  # type: ignore
+    spec.loader.exec_module(bounty)  # type: ignore
+
+    date_str = target_date.strftime("%d/%m/%Y")
+    # Call bounty.main; it returns the filtered dataframe
+    df: pd.DataFrame = bounty.main(["--date", date_str])  # type: ignore
+    return df
+
+
+def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, str, float]]]:
+    """Build a monospaced leaderboard text and return rows used.
+    Rows are tuples (rank, discord_id_str, points).
+    """
+    # Prepare rows with discord mention
+    rows: List[Tuple[int, str, float]] = []
+    for _, r in df.iterrows():
+        user_id = str(r.get("user_id"))
+        rank = int(r.get("rank"))
+        points = float(r.get("points"))
+        discord_id = id_map.get(user_id) or id_map.get(str(int(float(user_id)))) if user_id.replace(".", "", 1).isdigit() else id_map.get(user_id)
+        # Fallback to user_id if missing mapping
+        display = f"<@{discord_id}>" if discord_id else f"ID:{user_id}"
+        rows.append((rank, display, points))
+
+    # Build table with fixed widths
+    medal = {1: "🥇", 2: "🥈", 3: "🥉"}
+    header = f"Leaderboard for {date_str}"
+    col_r = "Rk"
+    col_u = "User"
+    col_p = "Pts"
+
+    # Compute width for user column (limit to avoid too wide)
+    user_width = max(len(col_u), *(len(u) for _, u, _ in rows))
+    user_width = min(user_width, 40)
+
+    def fmt_row(rank: int, user: str, pts: float) -> str:
+        icon = medal.get(rank, " ")
+        user_cut = user if len(user) <= user_width else user[: user_width - 1] + "…"
+        return f"{icon} {rank:>2}  {user_cut:<{user_width}}  {pts:>6.0f}"
+
+    lines = [
+        header,
+        "",
+        "```",
+        f"{col_r:>3}  {col_u:<{user_width}}  {col_p:>6}",
+        f"{'-'*3}  {'-'*user_width}  {'-'*6}",
+    ]
+    for rank, user, pts in rows:
+        lines.append(fmt_row(rank, user, pts))
+    lines.append("```")
+    text = "\n".join(lines)
+    return text, rows
+
+
+async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: str, banner_path: Optional[str]) -> None:
+    import discord  # type: ignore
+
+    intents = discord.Intents.default()
+    client = discord.Client(intents=intents)
+
+    async def _send_and_close():
+        try:
+            channel = client.get_channel(channel_id)
+            if channel is None:
+                # Try fetching if not cached
+                channel = await client.fetch_channel(channel_id)  # type: ignore
+            file = None
+            embed = None
+            if banner_path and os.path.exists(banner_path):
+                file = discord.File(banner_path, filename=os.path.basename(banner_path))
+                embed = discord.Embed()
+                embed.set_image(url=f"attachment://{os.path.basename(banner_path)}")
+            if embed and file:
+                await channel.send(content=content, file=file, embed=embed)  # type: ignore
+            else:
+                await channel.send(content=content)  # type: ignore
+        finally:
+            await client.close()
+
+    @client.event
+    async def on_ready():
+        await _send_and_close()
+
+    await client.start(token)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="KO Leaderboard poster using bounty.py and users_list.csv")
+    parser.add_argument("--date", required=True, help="Target date in DD/MM/YYYY")
+    args = parser.parse_args()
+
+    # Parse date
+    try:
+        target_date = dt.datetime.strptime(args.date, "%d/%m/%Y").date()
+    except ValueError:
+        raise SystemExit("--date must be in DD/MM/YYYY format")
+
+    # Resolve paths
+    base_dir = _script_dir()
+    users_csv = os.path.join(base_dir, "users_list.csv")
+    player_list_csv = os.path.join(base_dir, "player_list.csv")
+    pkos_xlsx = os.path.join(base_dir, "pkos.xlsx")
+    if not os.path.exists(users_csv):
+        raise SystemExit(f"Missing users_list.csv at {users_csv}")
+    if not os.path.exists(pkos_xlsx):
+        raise SystemExit(f"Missing pkos.xlsx at {pkos_xlsx}")
+
+    # Read users and write player_list.csv for bounty.py
+    user_ids, id_map = _read_users_mapping(users_csv)
+    if not user_ids:
+        raise SystemExit("No eligible customer_id entries found in users_list.csv")
+    _write_player_list_csv(player_list_csv, user_ids)
+
+    # Run bounty
+    df = _run_bounty_and_get_df(target_date)
+
+    # Build message
+    date_str = target_date.strftime("%d/%m/%Y")
+    message, _rows = _format_leaderboard(df, date_str, id_map)
+
+    # Discord
+    token = os.environ.get(DISCORD_BOT_TOKEN_ENV, "").strip()
+    if not token:
+        raise SystemExit(
+            f"Environment variable {DISCORD_BOT_TOKEN_ENV} is not set with your bot token"
+        )
+
+    banner_path = os.path.join(base_dir, BANNER_FILENAME) if BANNER_FILENAME else None
+
+    # Post
+    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, message, banner_path))
+
+
+if __name__ == "__main__":
+    main()
+
