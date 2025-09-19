@@ -17,9 +17,8 @@ CHANNEL_ID: int = 123456789012345678  # TODO: replace with your channel ID
 # File name for the banner image to display on top of the leaderboard (placed next to this script)
 BANNER_FILENAME: str = "banner.png"  # TODO: replace with your banner filename
 
-# Discord bot token is read from environment for safety
-# export DISCORD_BOT_TOKEN=... before running this script
-DISCORD_BOT_TOKEN_ENV: str = "DISCORD_BOT_TOKEN"
+# Discord bot token (replace with your actual bot token)
+DISCORD_BOT_TOKEN: str = "YOUR_BOT_TOKEN_HERE"
 
 
 def _script_dir() -> str:
@@ -191,10 +190,10 @@ def main() -> None:
     message, _rows = _format_leaderboard(df, date_str, id_map)
 
     # Discord
-    token = os.environ.get(DISCORD_BOT_TOKEN_ENV, "").strip()
-    if not token:
+    token = DISCORD_BOT_TOKEN.strip()
+    if not token or token == "YOUR_BOT_TOKEN_HERE":
         raise SystemExit(
-            f"Environment variable {DISCORD_BOT_TOKEN_ENV} is not set with your bot token"
+            "Please replace 'YOUR_BOT_TOKEN_HERE' with your actual Discord bot token in ko_lb.py"
         )
 
     banner_path = os.path.join(base_dir, BANNER_FILENAME) if BANNER_FILENAME else None
