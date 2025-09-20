@@ -119,18 +119,25 @@ def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str])
     if len(rows) > 0:
         lines.append("")  # Empty line before congratulations
         
-        # First 5 users (or all if less than 5)
-        first_5 = rows[:5]
-        if first_5:
-            first_5_users = ", ".join([user for _, user, _ in first_5])
-            lines.append(f"Félicitations {first_5_users}, vous gagnez tous un ticket pour le Main Event des KO Series 50 000€ garanti de dimanche 5 octobre.")
+        # First congratulations: all players ranked 1st to 5th (including ties at 5th)
+        first_5_users = []
+        for rank, user, _ in rows:
+            if rank <= 5:
+                first_5_users.append(user)
         
-        # 6th to 10th users (if they exist)
-        if len(rows) > 5:
-            sixth_to_tenth = rows[5:10]
-            if sixth_to_tenth:
-                sixth_to_tenth_users = ", ".join([user for _, user, _ in sixth_to_tenth])
-                lines.append(f"Bien joué {sixth_to_tenth_users}, vous gagnez tous un ticket 20€ à utiliser dans les tournois des KO Series !")
+        if first_5_users:
+            first_5_users_str = ", ".join(first_5_users)
+            lines.append(f"Félicitations {first_5_users_str}, vous gagnez tous un ticket pour le Main Event des KO Series 50 000€ garanti de dimanche 5 octobre.")
+        
+        # Second congratulations: all players ranked 6th to 10th (including ties)
+        sixth_to_tenth_users = []
+        for rank, user, _ in rows:
+            if 6 <= rank <= 10:
+                sixth_to_tenth_users.append(user)
+        
+        if sixth_to_tenth_users:
+            sixth_to_tenth_users_str = ", ".join(sixth_to_tenth_users)
+            lines.append(f"Bien joué {sixth_to_tenth_users_str}, vous gagnez tous un ticket 20€ à utiliser dans les tournois des KO Series !")
     
     text = "\n".join(lines)
     return text, rows
