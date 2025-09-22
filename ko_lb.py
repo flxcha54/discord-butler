@@ -89,9 +89,16 @@ def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str])
     for _, r in df.iterrows():
         user_id = str(r.get("user_id"))
         rank = int(r.get("rank"))
-        points = float(r.get("points"))
+        # robust numeric handling for points
+        try:
+            points_val = float(r.get("points"))
+        except Exception:
+            points_val = float('nan')
+        if points_val != points_val:  # NaN
+            continue
+        points = points_val
         
-        # Skip players with 0 points
+        # Skip players with 0 or negative points
         if points <= 0:
             continue
             

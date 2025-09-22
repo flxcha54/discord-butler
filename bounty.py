@@ -244,9 +244,11 @@ def compute_rankings_for_date(
         total_points = 0.0
         for col_idx, category in col_to_category.items():
             raw_val = row[col_idx] if col_idx < len(row) else None
-            # Treat empty as 0
+            # Treat empty/invalid/NaN as 0
             try:
-                count = float(raw_val) if raw_val not in (None, "") else 0.0
+                count = float(raw_val) if raw_val not in (None, "", "nan", "NaN") else 0.0
+                if count != count:  # NaN check
+                    count = 0.0
             except Exception:
                 count = 0.0
             # Category points per spec
@@ -336,7 +338,9 @@ def compute_unfiltered_rankings_for_date(
         for col_idx, category in col_to_category.items():
             raw_val = row[col_idx] if col_idx < len(row) else None
             try:
-                count = float(raw_val) if raw_val not in (None, "") else 0.0
+                count = float(raw_val) if raw_val not in (None, "", "nan", "NaN") else 0.0
+                if count != count:
+                    count = 0.0
             except Exception:
                 count = 0.0
             per_elim_points = POINTS_BY_CATEGORY.get(round(category, 4), 0)
