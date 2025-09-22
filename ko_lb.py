@@ -202,11 +202,11 @@ def main() -> None:
     # Resolve paths
     base_dir = _script_dir()
     users_csv = os.path.join(base_dir, "users_list.csv")
-    pkos_xlsx = os.path.join(base_dir, "pkos.xlsx")
+    pkos_xlsx = os.path.join(base_dir, "pko.xlsx")
     if not os.path.exists(users_csv):
         raise SystemExit(f"Missing users_list.csv at {users_csv}")
     if not os.path.exists(pkos_xlsx):
-        raise SystemExit(f"Missing pkos.xlsx at {pkos_xlsx}")
+        raise SystemExit(f"Missing pko.xlsx at {pkos_xlsx}")
 
     # Read users to build mapping customer_id -> discord_id for display
     _user_ids, id_map = _read_users_mapping(users_csv)

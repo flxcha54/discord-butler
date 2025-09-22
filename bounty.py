@@ -59,30 +59,13 @@ def _normalize_user_id(value: object) -> Optional[str]:
 
 
 def _parse_date_cell(value: object) -> Optional[dt.date]:
-    """Try to parse a value from row 7 into a date.
-
-    Accepts datetime.date/datetime, or strings in DD/MM/YYYY.
-    Returns the date or None if not parseable.
-    """
+    """Deprecated for new layout; retained for compatibility in case of legacy sheets."""
     if value is None:
         return None
     if isinstance(value, dt.datetime):
         return value.date()
     if isinstance(value, dt.date):
         return value
-    # Excel serial date number support (xlwings can sometimes return floats)
-    if isinstance(value, (int, float)):
-        try:
-            serial = float(value)
-            # Excel for Windows date origin is 1899-12-30 (accounting for 1900 leap year bug)
-            base = dt.date(1899, 12, 30)
-            delta = dt.timedelta(days=serial)
-            candidate = base + delta
-            # Heuristic: only accept reasonable calendar dates
-            if dt.date(1900, 1, 1) <= candidate <= dt.date(2100, 12, 31):
-                return candidate
-        except Exception:
-            pass
     if isinstance(value, str):
         s = value.strip()
         if not s:
@@ -155,147 +138,30 @@ def read_player_list(script_dir: str) -> List[str]:
     return user_ids
 
 
-def _refresh_sheet_pivots_with_wait(book, sh, timeout_sec: int = 120) -> None:
-    """Refresh pivot tables on the given sheet and wait until Excel finishes.
+def load_values_from_excel_sheet(excel_path: str, sheet_name: str) -> List[List[object]]:
+    """Load all cell values from a given Excel sheet using pandas (no pivot refresh).
 
-    Single attempt with timeout_sec waiting for calculation/async queries to finish.
-    Raises RuntimeError if not completed. Requires COM availability (Windows with Excel).
-    """
-    app_api = getattr(book.app, "api", None)
-    sh_api = getattr(sh, "api", None)
-    if app_api is None or sh_api is None:
-        raise RuntimeError(
-            "Cannot ensure refresh: Excel COM API is unavailable. Run on a machine with Excel."
-        )
-
-    # Issue refresh for pivot tables on the sheet
-    try:
-        pivots = sh_api.PivotTables()
-        count = int(pivots.Count)
-        for i in range(1, count + 1):
-            pt = pivots.Item(i)
-            try:
-                pt.RefreshTable()
-            except Exception:
-                try:
-                    pt.PivotCache().Refresh()
-                except Exception:
-                    pass
-    except Exception:
-        # If sheet has no pivots, try workbook-wide refresh
-        try:
-            book.api.RefreshAll()
-        except Exception:
-            pass
-
-    # Wait until Excel finishes calculations and async queries
-    start = time.time()
-    while time.time() - start < timeout_sec:
-        try:
-            # Try to complete async queries if supported
-            try:
-                app_api.CalculateUntilAsyncQueriesDone()
-            except Exception:
-                pass
-            state = getattr(app_api, "CalculationState", None)
-            # 0 == xlDone
-            if state == 0:
-                return
-        except Exception:
-            # Keep waiting if transient
-            pass
-        time.sleep(1)
-
-    # If we reach here, attempt timed out
-    raise RuntimeError("Pivot refresh did not complete within the allotted time.")
-
-
-def _kill_excel_processes():
-    """Force kill any remaining Excel processes to ensure clean restart."""
-    import subprocess
-    import platform
-    
-    system = platform.system().lower()
-    try:
-        if system == "windows":
-            subprocess.run(["taskkill", "/f", "/im", "excel.exe"], 
-                         capture_output=True, timeout=10)
-        elif system == "darwin":  # macOS
-            subprocess.run(["pkill", "-f", "Microsoft Excel"], 
-                         capture_output=True, timeout=10)
-        else:  # Linux
-            subprocess.run(["pkill", "-f", "excel"], 
-                         capture_output=True, timeout=10)
-    except Exception:
-        pass  # Ignore errors in process cleanup
-
-
-def load_values_with_xlwings(excel_path: str, sheet: Optional[object]) -> List[List[object]]:
-    """Load used range via xlwings after ensuring pivot refresh.
-
-    Simulates manual cancel-and-retry: if refresh stalls/times out, fully kills
-    Excel processes and reopens, retrying up to 5 times. Only reads after a successful refresh.
+    Returns a matrix of Python objects with None for empty cells. Raises a clear
+    error if the sheet is missing.
     """
     try:
-        import xlwings as xw  # type: ignore
-    except Exception as exc:  # pragma: no cover
+        df = pd.read_excel(excel_path, sheet_name=sheet_name, header=None, engine=None)
+    except ValueError as exc:
+        # pandas raises ValueError if sheet is not found
+        raise FileNotFoundError(
+            f"Required sheet '{sheet_name}' not found in workbook: {excel_path}"
+        ) from exc
+    except ImportError as exc:
         raise RuntimeError(
-            "xlwings is required for this script. Please install it via 'pip install xlwings'."
+            "Reading .xlsx requires an engine like 'openpyxl'. Install via 'pip install openpyxl'."
         ) from exc
 
-    last_error: Optional[Exception] = None
-    for attempt in range(1, 6):
-        app = None
-        book = None
-        try:
-            print(f"Attempt {attempt}/5: Opening Excel and refreshing pivots...")
-            app = xw.App(visible=False, add_book=False)
-            book = app.books.open(excel_path, read_only=False, update_links=False)
-            if sheet is None:
-                sh = book.sheets[0]
-            else:
-                sh = book.sheets[sheet]
-
-            # Ensure pivot tables on this sheet are refreshed before reading
-            _refresh_sheet_pivots_with_wait(book, sh, timeout_sec=120)
-            print(f"Attempt {attempt}/5: Refresh completed successfully!")
-
-            used = sh.used_range
-            values = used.value
-            if not isinstance(values, list):
-                values = [[values]]
-            matrix: List[List[object]] = []
-            for row in values:
-                if isinstance(row, (list, tuple)):
-                    matrix.append(list(row))
-                else:
-                    matrix.append([row])
-            return matrix
-        except Exception as exc:
-            last_error = exc
-            print(f"Attempt {attempt}/5 failed: {exc}")
-        finally:
-            # Always try to close cleanly first
-            if book is not None:
-                try:
-                    book.close(save=False)
-                except Exception:
-                    pass
-            if app is not None:
-                try:
-                    app.quit()
-                except Exception:
-                    pass
-            
-            # Force kill any remaining Excel processes
-            if attempt < 5:  # Don't kill on final attempt
-                print(f"Killing Excel processes before retry...")
-                _kill_excel_processes()
-                time.sleep(3)  # Give time for processes to fully terminate
-
-    if last_error is not None:
-        raise RuntimeError(f"Failed to refresh and read after retries: {last_error}") from last_error
-    raise RuntimeError("Failed to refresh and read after retries due to unknown error.")
+    # Replace NaN with None and convert to list of lists
+    matrix: List[List[object]] = df.where(pd.notna(df), None).values.tolist()
+    # Ensure at least 1 row structure
+    if not isinstance(matrix, list):
+        matrix = [[matrix]]
+    return matrix
 
 
 def compute_rankings_for_date(
@@ -306,9 +172,8 @@ def compute_rankings_for_date(
     """Compute ranking DataFrame for the given date from a values matrix.
 
     The matrix follows the specified structure:
-    - Rows 1-6 ignored
-    - Row 7: date headers (first column is label). Forward-fill date across category columns
-    - Row 8: category headers as floats
+    - This function now expects a per-date sheet, with categories on the header row
+      that contains 'Row Labels'. There is no separate date header row.
     - Column 1: 'Row Labels' with user_ids, starting at row 9
     - Remaining cells: elimination counts (numbers)
     """
@@ -336,38 +201,20 @@ def compute_rankings_for_date(
     if category_row_idx is None:
         raise ValueError("Could not locate 'Row Labels' header in the sheet.")
 
-    if category_row_idx - 1 < 0:
-        raise ValueError("Date header row not found above the categories row.")
-    date_row_idx = category_row_idx - 1
-
-    # Forward-fill dates across columns on row 7
-    filled_dates: List[Optional[dt.date]] = [None] * max_cols
-    last_date: Optional[dt.date] = None
+    # Parse categories from the header row (same row as 'Row Labels')
     start_col = (row_labels_col_idx or 0) + 1
-    for col in range(start_col, max_cols):
-        raw_date = grid[date_row_idx][col] if date_row_idx < len(grid) else None
-        parsed = _parse_date_cell(raw_date)
-        if parsed is not None:
-            last_date = parsed
-        filled_dates[col] = last_date
-
-    # Parse categories from row 8 per column
     categories: List[Optional[float]] = [None] * max_cols
     for col in range(start_col, max_cols):
         categories[col] = _parse_category_cell(grid[category_row_idx][col])
 
-    # Determine which columns belong to the target date
-    target_cols: List[int] = [
-        c for c in range(start_col, max_cols) if filled_dates[c] == target_date and categories[c] is not None
-    ]
+    # Use all columns that have a valid numeric category
+    target_cols: List[int] = [c for c in range(start_col, max_cols) if categories[c] is not None]
     if not target_cols:
-        # No data for this date: return allowed players with zero points
         df = pd.DataFrame({"user_id": allowed_user_ids, "points": [0] * len(allowed_user_ids)})
         df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
         df.insert(0, "rank", range(1, len(df) + 1))
         return df.reset_index(drop=True)
 
-    # Map column to its category
     col_to_category: Dict[int, float] = {c: float(categories[c]) for c in target_cols if categories[c] is not None}
 
     # Build user_id -> points
@@ -445,29 +292,14 @@ def compute_unfiltered_rankings_for_date(
             break
     if category_row_idx is None:
         raise ValueError("Could not locate 'Row Labels' header in the sheet.")
-    if category_row_idx - 1 < 0:
-        raise ValueError("Date header row not found above the categories row.")
-    date_row_idx = category_row_idx - 1
-
-    filled_dates: List[Optional[dt.date]] = [None] * max_cols
-    last_date: Optional[dt.date] = None
+    # No date header row; categories are on the same row as 'Row Labels'
     start_col = (row_labels_col_idx or 0) + 1
-    for col in range(start_col, max_cols):
-        raw_date = grid[date_row_idx][col] if date_row_idx < len(grid) else None
-        parsed = _parse_date_cell(raw_date)
-        if parsed is not None:
-            last_date = parsed
-        filled_dates[col] = last_date
-
     categories: List[Optional[float]] = [None] * max_cols
     for col in range(start_col, max_cols):
         categories[col] = _parse_category_cell(grid[category_row_idx][col])
 
-    target_cols: List[int] = [
-        c for c in range(start_col, max_cols) if filled_dates[c] == target_date and categories[c] is not None
-    ]
+    target_cols: List[int] = [c for c in range(start_col, max_cols) if categories[c] is not None]
     if not target_cols:
-        # No columns for this date: return all users with 0 points
         user_ids: List[str] = []
         data_start_row = category_row_idx + 1
         for row_idx in range(data_start_row, len(grid)):
@@ -479,7 +311,6 @@ def compute_unfiltered_rankings_for_date(
                 user_ids.append(uid)
         user_ids = sorted(set(user_ids))
         df0 = pd.DataFrame({"user_id": user_ids, "points": [0] * len(user_ids)})
-        # All points equal -> all share rank 1 under competition ranking
         df0.insert(0, "rank", [1] * len(df0))
         return df0
 
@@ -533,7 +364,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Compute and rank player points per day and write a CSV. "
-            "Uses xlwings to read the workbook per the specified sheet structure."
+            "Reads a per-date sheet (DD_MM_YYYY) from pko.xlsx with categories as columns."
         )
     )
     parser.add_argument(
@@ -542,13 +373,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "Path to the Excel workbook. If omitted, the script will look for "
-            "'pkos.xlsx' (or the common typo 'pkos.xslx') next to bounty.py."
+            "'pko.xlsx' (or the common typo 'pko.xslx') next to bounty.py."
         ),
-    )
-    parser.add_argument(
-        "--sheet",
-        default=None,
-        help="Worksheet name or index (0-based). Default: first sheet.",
     )
     parser.add_argument(
         "--date",
@@ -565,20 +391,20 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     args = parse_args(argv)
-    # Resolve Excel path: use --excel if provided, otherwise default to pkos.xlsx (or pkos.xslx) next to script
+    # Resolve Excel path: use --excel if provided, otherwise default to pko.xlsx (or pko.xslx) next to script
     if args.excel:
         excel_path = os.path.abspath(args.excel)
     else:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        candidate1 = os.path.join(script_dir, "pkos.xlsx")
-        candidate2 = os.path.join(script_dir, "pkos.xslx")  # tolerate common typo
+        candidate1 = os.path.join(script_dir, "pko.xlsx")
+        candidate2 = os.path.join(script_dir, "pko.xslx")  # tolerate common typo
         if os.path.exists(candidate1):
             excel_path = candidate1
         elif os.path.exists(candidate2):
             excel_path = candidate2
         else:
             raise FileNotFoundError(
-                "Excel file not provided and neither 'pkos.xlsx' nor 'pkos.xslx' found next to bounty.py"
+                "Excel file not provided and neither 'pko.xlsx' nor 'pko.xslx' found next to bounty.py"
             )
     if not os.path.exists(excel_path):
         raise FileNotFoundError(f"Excel file not found: {excel_path}")
@@ -589,18 +415,8 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     except ValueError as exc:
         raise SystemExit("--date must be in DD/MM/YYYY format") from exc
 
-    # Sheet selection
-    sheet_arg: Optional[str]
-    if args.sheet is None:
-        # Default to 'bounties' sheet if present, otherwise first sheet
-        sheet_arg = "bounties"
-    else:
-        # allow numeric index
-        s = str(args.sheet).strip()
-        if s.isdigit():
-            sheet_arg = str(int(s))  # xlwings accepts index via sheets[int]
-        else:
-            sheet_arg = s
+    # Derive per-date sheet name like 'DD_MM_YYYY'
+    sheet_name = target_date.strftime("%d_%m_%Y")
 
     # Load player list
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -608,17 +424,8 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     if not allowed_user_ids:
         raise SystemExit("users_list.csv is empty or missing valid customer ids")
 
-    # Read matrix via xlwings
-    # Determine sheet reference (name or index)
-    sheet_ref: Optional[object]
-    if sheet_arg is None:
-        sheet_ref = None
-    elif sheet_arg.isdigit():
-        sheet_ref = int(sheet_arg)
-    else:
-        sheet_ref = sheet_arg
-
-    values = load_values_with_xlwings(excel_path, sheet=sheet_ref)
+    # Read matrix from the per-date sheet; error if missing
+    values = load_values_from_excel_sheet(excel_path, sheet_name)
 
     # Compute
     df = compute_rankings_for_date(values, target_date, allowed_user_ids)
