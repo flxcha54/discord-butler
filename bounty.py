@@ -79,8 +79,10 @@ def _parse_date_cell(value: object) -> Optional[dt.date]:
 
 
 def _parse_category_cell(value: object) -> Optional[float]:
-    """Parse category title from row 8 into float with 4 decimals accepted.
-    Returns None if not parseable.
+    """Parse category header into a float.
+
+    Accepts numbers and strings containing a leading numeric token, e.g.:
+    '0,1', '0.1', '0.1x', '0.1 pts', '  0,50  '. Returns None if not parseable.
     """
     if value is None:
         return None
@@ -90,9 +92,14 @@ def _parse_category_cell(value: object) -> Optional[float]:
         s = value.strip()
         if not s:
             return None
-        s = s.replace(",", ".")  # tolerate commas
+        # Replace comma decimal, then extract the first numeric token
+        s = s.replace(",", ".")
+        import re
+        m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
+        if not m:
+            return None
         try:
-            return float(s)
+            return float(m.group(0))
         except ValueError:
             return None
     return None
@@ -177,8 +184,8 @@ def compute_rankings_for_date(
     - Column 1: 'Row Labels' with user_ids, starting at row 9
     - Remaining cells: elimination counts (numbers)
     """
-    if not values or len(values) < 8:
-        raise ValueError("Input sheet appears too small to contain the required header rows.")
+    if not values or len(values) < 2:
+        raise ValueError("Input sheet appears too small to contain headers and data.")
 
     # Normalize row lengths (ragged rows can appear)
     max_cols = max(len(r) for r in values)
@@ -270,8 +277,8 @@ def compute_unfiltered_rankings_for_date(
     values: List[List[object]], target_date: dt.date
 ) -> pd.DataFrame:
     """Compute ranking DataFrame for the given date without filtering by player_list.csv."""
-    if not values or len(values) < 8:
-        raise ValueError("Input sheet appears too small to contain the required header rows.")
+    if not values or len(values) < 2:
+        raise ValueError("Input sheet appears too small to contain headers and data.")
 
     max_cols = max(len(r) for r in values)
     grid: List[List[object]] = [r + [None] * (max_cols - len(r)) for r in values]
