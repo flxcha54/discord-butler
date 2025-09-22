@@ -79,71 +79,74 @@ def _run_bounty_and_get_df(target_date: dt.date) -> pd.DataFrame:
     return df
 
 
-def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str]) -> Tuple[str, List[Tuple[int, str, float]]]:
-    """Build French leaderboard text and return rows used.
-    Rows are tuples (rank, discord_id_str, points).
-    Shows only top 10 players.
+def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str]) -> Tuple[str, str, List[Tuple[int, str, float]]]:
+    """Build leaderboard parts for Discord:
+    - returns (embed_title, embed_description, rows_used)
+    The congratulations text will be built later from rows.
+    Only top 10 players with points > 0 are included.
     """
     # Prepare rows with discord mention (only players with points > 0, limit to top 10)
     rows: List[Tuple[int, str, float]] = []
     for _, r in df.iterrows():
         user_id = str(r.get("user_id"))
         rank = int(r.get("rank"))
-        points = float(r.get("points"))
+        # robust numeric handling for points
+        try:
+            points_val = float(r.get("points"))
+        except Exception:
+            points_val = float('nan')
+        if points_val != points_val:  # NaN
+            continue
+        points = points_val
         
-        # Skip players with 0 points
         if points <= 0:
             continue
-            
-        # Stop at 10 players
         if len(rows) >= 10:
             break
-            
+        
         discord_id = id_map.get(user_id) or id_map.get(str(int(float(user_id)))) if user_id.replace(".", "", 1).isdigit() else id_map.get(user_id)
-        # Fallback to user_id if missing mapping
         display = f"<@{discord_id}>" if discord_id else f"ID:{user_id}"
         rows.append((rank, display, points))
 
-    # Build French format
-    lines = [f"```{date_str}```", ""]
-    
+    embed_title = f"Classement {date_str}"
+    desc_lines: List[str] = []
     for rank, user, pts in rows:
         if rank == 1:
-            lines.append(f"1er - {user} avec {pts:.0f} point(s).")
+            desc_lines.append(f"1er - {user} avec {pts:.0f} point(s).")
         elif rank == 2:
-            lines.append(f"2ème - {user} avec {pts:.0f} point(s).")
+            desc_lines.append(f"2ème - {user} avec {pts:.0f} point(s).")
         else:
-            lines.append(f"{rank}ème - {user} avec {pts:.0f} point(s).")
-    
-    # Add congratulations messages
-    if len(rows) > 0:
-        lines.append("")  # Empty line before congratulations
-        
-        # First congratulations: all players ranked 1st to 5th (including ties at 5th)
-        first_5_users = []
-        for rank, user, _ in rows:
-            if rank <= 5:
-                first_5_users.append(user)
-        
-        if first_5_users:
-            first_5_users_str = ", ".join(first_5_users)
-            lines.append(f"Félicitations {first_5_users_str}, vous gagnez tous un ticket pour le Main Event des KO Series 50 000€ garanti de dimanche 5 octobre.")
-        
-        # Second congratulations: all players ranked 6th to 10th (including ties)
-        sixth_to_tenth_users = []
-        for rank, user, _ in rows:
-            if 6 <= rank <= 10:
-                sixth_to_tenth_users.append(user)
-        
-        if sixth_to_tenth_users:
-            sixth_to_tenth_users_str = ", ".join(sixth_to_tenth_users)
-            lines.append(f"Bien joué {sixth_to_tenth_users_str}, vous gagnez tous un ticket 20€ à utiliser dans les tournois des KO Series !")
-    
-    text = "\n".join(lines)
-    return text, rows
+            desc_lines.append(f"{rank}ème - {user} avec {pts:.0f} point(s).")
+    embed_description = "\n".join(desc_lines) if desc_lines else "Aucun joueur avec des points > 0."
+
+    return embed_title, embed_description, rows
 
 
-async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: str, banner_path: Optional[str]) -> None:
+def _build_congratulations(rows: List[Tuple[int, str, float]]) -> str:
+    if not rows:
+        return ""
+    lines: List[str] = []
+    # First congratulations: all players ranked 1st to 5th (including ties at 5th)
+    first_5_users: List[str] = []
+    for rank, user, _ in rows:
+        if rank <= 5:
+            first_5_users.append(user)
+    if first_5_users:
+        first_5_users_str = ", ".join(first_5_users)
+        lines.append(f"Félicitations {first_5_users_str}, vous gagnez tous un ticket pour le Main Event des KO Series 50 000€ garanti de dimanche 5 octobre.")
+
+    # Second congratulations: all players ranked 6th to 10th (including ties)
+    sixth_to_tenth_users: List[str] = []
+    for rank, user, _ in rows:
+        if 6 <= rank <= 10:
+            sixth_to_tenth_users.append(user)
+    if sixth_to_tenth_users:
+        sixth_to_tenth_users_str = ", ".join(sixth_to_tenth_users)
+        lines.append(f"Bien joué {sixth_to_tenth_users_str}, vous gagnez tous un ticket 20€ à utiliser dans les tournois des KO Series !")
+    return "\n".join(lines)
+
+
+async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner_path: Optional[str], embed_title: str, embed_description: str, congrats_text: str) -> None:
     import aiohttp
 
     url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
@@ -151,39 +154,43 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, content: 
     
     async with aiohttp.ClientSession() as session:
         try:
+            # 1) Send banner image if provided
             if banner_path and os.path.exists(banner_path):
-                # Send banner image first (above)
                 form_data = aiohttp.FormData()
-                
-                # Read file content and add to form data
                 with open(banner_path, 'rb') as f:
                     file_content = f.read()
                 form_data.add_field('file', file_content, filename=os.path.basename(banner_path))
-                
-                # Send image first
                 async with session.post(url, headers=headers, data=form_data) as response:
                     if response.status == 200:
                         print("Banner image posted successfully!")
                     else:
                         print(f"Error posting banner: {response.status} - {await response.text()}")
-                
-                # Then send the leaderboard text
-                data = {'content': content}
-                headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+
+            # 2) Send embed with leaderboard
+            headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+            embed_payload = {
+                'embeds': [
+                    {
+                        'title': embed_title,
+                        'description': embed_description,
+                        'color': 0x00AEEF
+                    }
+                ]
+            }
+            async with session.post(url, headers=headers_json, json=embed_payload) as response:
+                if response.status == 200:
+                    print("Leaderboard embed posted successfully!")
+                else:
+                    print(f"Error posting embed: {response.status} - {await response.text()}")
+
+            # 3) Send congratulations text, if any
+            if congrats_text:
+                data = {'content': congrats_text}
                 async with session.post(url, headers=headers_json, json=data) as response:
                     if response.status == 200:
-                        print("Leaderboard text posted successfully!")
+                        print("Congratulations message posted successfully!")
                     else:
-                        print(f"Error posting leaderboard: {response.status} - {await response.text()}")
-            else:
-                # Send text only - use JSON
-                headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
-                data = {'content': content}
-                async with session.post(url, headers=headers_json, json=data) as response:
-                    if response.status == 200:
-                        print("Message posted successfully!")
-                    else:
-                        print(f"Error posting message: {response.status} - {await response.text()}")
+                        print(f"Error posting congratulations: {response.status} - {await response.text()}")
         except Exception as e:
             print(f"Error posting to Discord: {e}")
 
@@ -202,11 +209,11 @@ def main() -> None:
     # Resolve paths
     base_dir = _script_dir()
     users_csv = os.path.join(base_dir, "users_list.csv")
-    pkos_xlsx = os.path.join(base_dir, "pkos.xlsx")
+    pkos_xlsx = os.path.join(base_dir, "pko.xlsx")
     if not os.path.exists(users_csv):
         raise SystemExit(f"Missing users_list.csv at {users_csv}")
     if not os.path.exists(pkos_xlsx):
-        raise SystemExit(f"Missing pkos.xlsx at {pkos_xlsx}")
+        raise SystemExit(f"Missing pko.xlsx at {pkos_xlsx}")
 
     # Read users to build mapping customer_id -> discord_id for display
     _user_ids, id_map = _read_users_mapping(users_csv)
@@ -217,9 +224,10 @@ def main() -> None:
     # Run bounty
     df = _run_bounty_and_get_df(target_date)
 
-    # Build message
+    # Build leaderboard and congratulations
     date_str = target_date.strftime("%d/%m/%Y")
-    message, _rows = _format_leaderboard(df, date_str, id_map)
+    embed_title, embed_description, rows = _format_leaderboard(df, date_str, id_map)
+    congrats_text = _build_congratulations(rows)
 
     # Discord
     token = DISCORD_BOT_TOKEN.strip()
@@ -231,7 +239,7 @@ def main() -> None:
     banner_path = os.path.join(base_dir, BANNER_FILENAME) if BANNER_FILENAME else None
 
     # Post
-    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, message, banner_path))
+    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, banner_path=banner_path, embed_title=embed_title, embed_description=embed_description, congrats_text=congrats_text))
 
 
 if __name__ == "__main__":
