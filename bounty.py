@@ -8,6 +8,8 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import unicodedata
+import re
 
 
 POINTS_BY_CATEGORY: Dict[float, int] = {
@@ -105,6 +107,26 @@ def _parse_category_cell(value: object) -> Optional[float]:
     return None
 
 
+def _normalize_event_name(value: object) -> str:
+    """Normalize event names for matching across sources.
+
+    - Convert to str, strip, lowercase
+    - Unicode normalize and remove diacritics
+    - Keep only ASCII letters and digits [a-z0-9]
+    """
+    if value is None:
+        return ""
+    s = str(value).strip().lower()
+    if not s:
+        return ""
+    # Remove accents/diacritics
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    # Keep only letters and digits
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s
+
+
 def read_player_list(script_dir: str) -> List[str]:
     """Load allowed customer_ids from users_list.csv in the script directory.
 
@@ -165,7 +187,8 @@ def read_koseries_events_for_date(script_dir: str, target_date: dt.date) -> List
                     # Parse date in DD/MM/YYYY format
                     event_date = dt.datetime.strptime(row['date'], "%d/%m/%Y").date()
                     if event_date == target_date:
-                        events_for_date.append(row['name'])
+                        # Store normalized event name
+                        events_for_date.append(_normalize_event_name(row['name']))
                 except ValueError:
                     # Skip rows with invalid date format
                     continue
@@ -223,18 +246,19 @@ def compute_rankings_for_date(
     event_names_row = grid[7] if len(grid) > 7 else []
     categories_row = grid[8] if len(grid) > 8 else []
     
-    # Find columns that match the event names for this date
+    # Find columns that match the event names for this date (using normalized comparison)
     target_cols: List[int] = []
     col_to_category: Dict[int, float] = {}
     col_to_event_name: Dict[int, str] = {}
+    normalized_targets = { _normalize_event_name(n) for n in event_names }
     
     for col_idx in range(len(event_names_row)):
         if col_idx < len(categories_row):
             event_name = str(event_names_row[col_idx]).strip() if event_names_row[col_idx] else ""
             category = _parse_category_cell(categories_row[col_idx])
-            
-            # Check if this event name is in our target events for this date
-            if event_name in event_names and category is not None:
+            normalized_event_name = _normalize_event_name(event_name)
+            # Check if this event name (normalized) is in our target events for this date
+            if normalized_event_name in normalized_targets and category is not None:
                 target_cols.append(col_idx)
                 col_to_category[col_idx] = float(category)
                 col_to_event_name[col_idx] = event_name
@@ -351,17 +375,18 @@ def compute_unfiltered_rankings_for_date(
     event_names_row = grid[7] if len(grid) > 7 else []
     categories_row = grid[8] if len(grid) > 8 else []
     
-    # Find columns that match the event names for this date
+    # Find columns that match the event names for this date (using normalized comparison)
     target_cols: List[int] = []
     col_to_category: Dict[int, float] = {}
+    normalized_targets = { _normalize_event_name(n) for n in event_names }
     
     for col_idx in range(len(event_names_row)):
         if col_idx < len(categories_row):
             event_name = str(event_names_row[col_idx]).strip() if event_names_row[col_idx] else ""
             category = _parse_category_cell(categories_row[col_idx])
-            
-            # Check if this event name is in our target events for this date
-            if event_name in event_names and category is not None:
+            normalized_event_name = _normalize_event_name(event_name)
+            # Check if this event name (normalized) is in our target events for this date
+            if normalized_event_name in normalized_targets and category is not None:
                 target_cols.append(col_idx)
                 col_to_category[col_idx] = float(category)
 
