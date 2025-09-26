@@ -134,11 +134,11 @@ async def _fetch_display_names(token: str, guild_id: int, discord_ids: List[str]
                     if resp.status != 200:
                         continue
                     data = await resp.json()
-                    nick = data.get('nick')
                     user = data.get('user') or {}
+                    # Prefer global_name per spec, then fallback to username
                     global_name = user.get('global_name')
                     username = user.get('username')
-                    display = nick or global_name or username
+                    display = global_name or username
                     if display:
                         names[uid] = str(display)
             except Exception:
