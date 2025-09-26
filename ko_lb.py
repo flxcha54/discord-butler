@@ -133,7 +133,8 @@ def _build_name_mapping_for_rankings(
             discord_id = customer_to_discord.get(customer_id)
             display = None
             if discord_id:
-                display = discord_to_display.get(discord_id)
+                # Prefer fetched guild display, else fall back to mention
+                display = discord_to_display.get(discord_id) or f"<@{discord_id}>"
             if not display:
                 # As a last resort keep the original ID for traceability
                 display = f"ID:{customer_id}"
@@ -223,7 +224,7 @@ def _build_congratulations(rows: List[Tuple[int, str, float]]) -> str:
     return "\n".join(lines)
 
 
-async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner_path: Optional[str], embed_title: str, embed_description: str, congrats_text: str, attachments: Optional[List[Tuple[str, bytes]]] = None) -> None:
+async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner_path: Optional[str], embed_title: str, embed_description: str, congrats_text: str) -> None:
     import aiohttp
 
     url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
@@ -243,8 +244,8 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner
                     else:
                         print(f"Error posting banner: {response.status} - {await response.text()}")
 
-            # 2) Send embed with leaderboard and button, optionally with CSV attachments in one message
-            form_data = aiohttp.FormData()
+            # 2) Send embed with leaderboard and button
+            headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
             payload = {
                 'embeds': [
                     {
@@ -267,11 +268,7 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner
                     }
                 ]
             }
-            form_data.add_field('payload_json', json.dumps(payload), content_type='application/json')
-            if attachments:
-                for idx, (filename, content) in enumerate(attachments):
-                    form_data.add_field(f'files[{idx}]', content, filename=filename, content_type='text/csv')
-            async with session.post(url, headers=headers, data=form_data) as response:
+            async with session.post(url, headers=headers_json, json=payload) as response:
                 if response.status == 200:
                     print("Leaderboard embed posted successfully!")
                 else:
@@ -287,6 +284,25 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner
                         print(f"Error posting congratulations: {response.status} - {await response.text()}")
         except Exception as e:
             print(f"Error posting to Discord: {e}")
+
+
+async def _post_files_to_discord(token: str, channel_id: int, attachments: List[Tuple[str, bytes]]) -> None:
+    import aiohttp
+    if not attachments:
+        return
+    url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+    headers = {'Authorization': f'Bot {token}'}
+    async with aiohttp.ClientSession() as session:
+        form_data = aiohttp.FormData()
+        # Minimal content to avoid empty message
+        form_data.add_field('payload_json', json.dumps({'content': 'Fichiers des classements:'}), content_type='application/json')
+        for idx, (filename, content) in enumerate(attachments):
+            form_data.add_field(f'files[{idx}]', content, filename=filename, content_type='text/csv')
+        async with session.post(url, headers=headers, data=form_data) as response:
+            if response.status == 200:
+                print("CSV attachments posted successfully!")
+            else:
+                print(f"Error posting CSVs: {response.status} - {await response.text()}")
 
 
 def main() -> None:
@@ -358,7 +374,7 @@ def main() -> None:
     koseries_named_df = _transform_ranking_df_for_names(koseries_df, customer_to_name)
     general_named_df = _transform_ranking_df_for_names(general_df, customer_to_name)
 
-    # Serialize to CSV bytes for attachments
+    # Serialize to CSV bytes for attachments (to be sent in a separate final message)
     attachments: List[Tuple[str, bytes]] = []
     if not koseries_named_df.empty:
         attachments.append((f"classement_koseries_{target_date.strftime('%d-%m-%Y')}_noms.csv", koseries_named_df.to_csv(index=False).encode('utf-8')))
@@ -369,7 +385,9 @@ def main() -> None:
     banner_path = os.path.join(base_dir, BANNER_FILENAME) if BANNER_FILENAME else None
 
     # Post
-    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, banner_path=banner_path, embed_title=embed_title, embed_description=embed_description, congrats_text=congrats_text, attachments=attachments))
+    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, banner_path=banner_path, embed_title=embed_title, embed_description=embed_description, congrats_text=congrats_text))
+    if attachments:
+        asyncio.run(_post_files_to_discord(token, CHANNEL_ID, attachments))
 
 
 if __name__ == "__main__":
