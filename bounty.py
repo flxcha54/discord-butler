@@ -196,6 +196,29 @@ def read_koseries_events_for_date(script_dir: str, target_date: dt.date) -> List
     return events_for_date
 
 
+def read_all_koseries_event_names(script_dir: str) -> List[str]:
+    """Load ALL event names from koseries_info.csv (normalized)."""
+    path = os.path.join(script_dir, "koseries_info.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Required file not found: {path}. Place koseries_info.csv next to bounty.py"
+        )
+    names: List[str] = []
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if 'name' in row and row['name']:
+                names.append(_normalize_event_name(row['name']))
+    # Deduplicate while preserving order
+    seen = set()
+    unique: List[str] = []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return unique
+
+
 def load_values_from_excel_sheet(excel_path: str, sheet_name: str) -> List[List[object]]:
     """Load all cell values from a given Excel sheet using pandas (no pivot refresh).
 
@@ -538,7 +561,6 @@ def compute_filtered_df_from_aggregates(
 ) -> pd.DataFrame:
     points_by_user: Dict[str, float] = {uid: 0.0 for uid in allowed_user_ids}
     total_bounties_by_user: Dict[str, int] = {uid: 0 for uid in allowed_user_ids}
-    bounty_counts_by_user: Dict[str, Dict[float, int]] = {uid: {} for uid in allowed_user_ids}
 
     for uid in allowed_user_ids:
         cat_counts = aggregates.get(uid, {})
@@ -550,7 +572,6 @@ def compute_filtered_df_from_aggregates(
             per_elim_points = POINTS_BY_CATEGORY.get(round(float(category), 4), 0)
             total_points += float(count) * per_elim_points
             total_bounties += int(count)
-            bounty_counts_by_user[uid][category] = int(count)
         points_by_user[uid] = total_points
         total_bounties_by_user[uid] = total_bounties
 
@@ -561,20 +582,11 @@ def compute_filtered_df_from_aggregates(
                 "user_id": uid,
                 "points": points_by_user[uid],
                 "primes gagnées": total_bounties_by_user[uid],
-                "primes gagnées 1€": bounty_counts_by_user[uid].get(0.1, 0),
-                "primes gagnées 3€": bounty_counts_by_user[uid].get(0.3, 0),
-                "primes gagnées 5€": bounty_counts_by_user[uid].get(0.5, 0),
-                "primes gagnées 10€": bounty_counts_by_user[uid].get(1.0, 0),
-                "primes gagnées 20€": bounty_counts_by_user[uid].get(2.0, 0),
-                "primes gagnées 50€": bounty_counts_by_user[uid].get(5.0, 0),
-                "primes gagnées 100€": bounty_counts_by_user[uid].get(10.0, 0),
             })
 
     if not data_rows:
         return pd.DataFrame(columns=[
-            "rank", "user_id", "points", "primes gagnées",
-            "primes gagnées 1€", "primes gagnées 3€", "primes gagnées 5€",
-            "primes gagnées 10€", "primes gagnées 20€", "primes gagnées 50€", "primes gagnées 100€"
+            "rank", "user_id", "points", "primes gagnées"
         ])
 
     df = pd.DataFrame(data_rows)
@@ -683,8 +695,10 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     
     # Get event names for this date from koseries_info.csv
     event_names = read_koseries_events_for_date(script_dir, target_date)
-    if not event_names:
-        print(f"No events found for date {target_date.strftime('%d/%m/%Y')}")
+    # Also load ALL koseries event names (for the general/all-events ranking)
+    all_event_names = read_all_koseries_event_names(script_dir)
+    if not event_names and not all_event_names:
+        print(f"No events found in koseries_info.csv")
         return pd.DataFrame()
 
     # Discover all koseries_* sheets and aggregate counts across them
@@ -692,10 +706,13 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     if not sheet_names:
         raise SystemExit("No sheets starting with 'koseries_' found in the Excel workbook")
     aggregates = aggregate_user_category_counts(excel_path, sheet_names, event_names)
+    aggregates_all = aggregate_user_category_counts(excel_path, sheet_names, all_event_names)
 
     # Compute rankings from aggregates
     df = compute_filtered_df_from_aggregates(aggregates, allowed_user_ids)
     general_df = compute_unfiltered_df_from_aggregates(aggregates)
+    # General filtered ranking for ALL events (only users_list)
+    general_all_df = compute_filtered_df_from_aggregates(aggregates_all, allowed_user_ids)
 
     # Output with new naming convention
     out_path = args.out
@@ -706,12 +723,19 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     # Write general rankings alongside, using a parallel filename
     general_out_path = out_path.replace("classement_koseries_", "rankings_general_")
     write_csv(general_df, general_out_path)
+    # Write general filtered (all events) ranking
+    general_filtered_all_out_path = os.path.join(
+        os.getcwd(), f"classement_général_{target_date.strftime('%d-%m-%Y')}.csv"
+    )
+    write_csv(general_all_df, general_filtered_all_out_path)
 
     # Display summary
     print("Filtered (users_list) rankings:\n" + df.to_string(index=False))
     print(f"\nWrote CSV: {out_path}")
     print("\nGeneral rankings (unfiltered):\n" + general_df.to_string(index=False))
     print(f"\nWrote CSV: {general_out_path}")
+    print("\nGeneral rankings (users_list, ALL koseries events):\n" + general_all_df.to_string(index=False))
+    print(f"\nWrote CSV: {general_filtered_all_out_path}")
 
     return df
 
