@@ -28,6 +28,23 @@ DISCORD_BUTTON_LABEL: str = "Voir tous les classements"
 DISCORD_BUTTON_URL: str = "https://example.com/ko-series"  # replace with your link
 
 
+def _normalize_user_id(value: str) -> str:
+    """Normalize identifiers like '123.0' -> '123', '00123' -> '123'.
+    If not numeric-like, return stripped value.
+    """
+    s = (value or "").strip()
+    if not s:
+        return s
+    try:
+        f = float(s)
+        if abs(f - round(f)) < 1e-9:
+            return str(int(round(f)))
+        # Non-integer but numeric; keep canonical float string without trailing .0
+        return ("%f" % f).rstrip("0").rstrip(".")
+    except Exception:
+        return s
+
+
 def _script_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
@@ -49,9 +66,13 @@ def _read_users_mapping(users_csv_path: str) -> Tuple[List[str], Dict[str, str]]
             if not customer_id_raw or customer_id_raw.lower() == "staff":
                 continue
             # Normalize: keep as-is string; bounty.py has its own normalization
+            # Track raw and normalized ids
             customer_ids.append(customer_id_raw)
             if discord_id_raw:
                 customer_to_discord[customer_id_raw] = discord_id_raw
+                norm = _normalize_user_id(customer_id_raw)
+                if norm and norm not in customer_to_discord:
+                    customer_to_discord[norm] = discord_id_raw
 
     # Deduplicate preserving order
     seen: set = set()
@@ -61,7 +82,15 @@ def _read_users_mapping(users_csv_path: str) -> Tuple[List[str], Dict[str, str]]
             continue
         seen.add(cid)
         deduped.append(cid)
-    return deduped, customer_to_discord
+    # Also provide a normalized-only list to help with matching later
+    normalized_deduped: List[str] = []
+    seen_norm: set = set()
+    for cid in deduped:
+        norm = _normalize_user_id(cid)
+        if norm and norm not in seen_norm:
+            seen_norm.add(norm)
+            normalized_deduped.append(norm)
+    return normalized_deduped, customer_to_discord
 
 
 # player_list.csv generation is no longer needed because bounty.py now reads users_list.csv directly.
@@ -129,7 +158,7 @@ def _build_name_mapping_for_rankings(
         if df is None or df.empty:
             continue
         for _, r in df.iterrows():
-            customer_id = str(r.get('user_id'))
+            customer_id = _normalize_user_id(str(r.get('user_id')))
             if not customer_id:
                 continue
             discord_id = customer_to_discord.get(customer_id)
