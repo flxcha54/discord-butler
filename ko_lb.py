@@ -116,33 +116,39 @@ def _run_bounty_and_get_df(target_date: dt.date) -> pd.DataFrame:
 
 
 async def _fetch_display_names(token: str, guild_id: int, discord_ids: List[str]) -> Dict[str, str]:
-    """Fetch server display names for a list of discord user IDs in a guild.
-    Returns mapping discord_id -> display_name (prefers nick, then global_name, then username).
-    Missing users are omitted.
+    """Fetch member display names using Discord client API.
+    Prefers member.nick, then member.display_name, then member.name.
+    Returns mapping discord_id -> display name.
     """
-    import aiohttp
-    headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
-    base_url = f'https://discord.com/api/v10/guilds/{guild_id}/members'
+    import discord  # type: ignore
+    intents = discord.Intents.none()
+    intents.guilds = True
+    intents.members = True
+    client = discord.Client(intents=intents)
+
     names: Dict[str, str] = {}
-    async with aiohttp.ClientSession() as session:
-        for uid in discord_ids:
-            if not uid:
-                continue
-            try:
-                url = f"{base_url}/{uid}"
-                async with session.get(url, headers=headers_json) as resp:
-                    if resp.status != 200:
-                        continue
-                    data = await resp.json()
-                    user = data.get('user') or {}
-                    # Prefer global_name per spec, then fallback to username
-                    global_name = user.get('global_name')
-                    username = user.get('username')
-                    display = global_name or username
+
+    async def _runner():
+        try:
+            guild = await client.fetch_guild(int(guild_id))
+            for uid in discord_ids:
+                if not uid:
+                    continue
+                try:
+                    member = await guild.fetch_member(int(uid))
+                    display = member.nick or getattr(member, 'display_name', None) or member.name
                     if display:
-                        names[uid] = str(display)
-            except Exception:
-                continue
+                        names[str(uid)] = str(display)
+                except Exception:
+                    continue
+        finally:
+            await client.close()
+
+    @client.event
+    async def on_ready():
+        await _runner()
+
+    await client.start(token)
     return names
 
 
@@ -164,12 +170,10 @@ def _build_name_mapping_for_rankings(
             discord_id = customer_to_discord.get(customer_id)
             display = None
             if discord_id:
-                # Prefer fetched guild display, else fall back to mention
-                display = discord_to_display.get(discord_id) or f"<@{discord_id}>"
-            if not display:
-                # As a last resort keep the original ID for traceability
-                display = f"ID:{customer_id}"
-            mapping[customer_id] = display
+                # Use fetched guild display name only (no mentions/ids in CSV)
+                display = discord_to_display.get(discord_id)
+            # Default to empty string if not found
+            mapping[customer_id] = display or ""
     return mapping
 
 
@@ -180,8 +184,8 @@ def _transform_ranking_df_for_names(df: pd.DataFrame, customer_to_name: Dict[str
     # Rename columns
     if 'rank' in df2.columns:
         df2 = df2.rename(columns={'rank': 'classement'})
-    # Replace user_id with 'nom'
-    df2['nom'] = df2['user_id'].astype(str).map(lambda x: customer_to_name.get(str(x), f"ID:{x}"))
+    # Replace user_id with 'nom' using normalized id mapping; default to empty string
+    df2['nom'] = df2['user_id'].astype(str).map(lambda x: customer_to_name.get(_normalize_user_id(str(x)), ""))
     # Reorder: classement, nom, points, rest...
     cols = ['classement', 'nom'] + [c for c in df2.columns if c not in ('classement', 'nom', 'user_id')]
     df2 = df2[cols]
@@ -393,9 +397,9 @@ def main() -> None:
     for source_df in (koseries_df, general_df):
         if source_df is None or source_df.empty:
             continue
-        for _, r in source_df.iterrows():
-            customer_id = str(r.get('user_id'))
-            did = id_map.get(customer_id)
+    for _, r in source_df.iterrows():
+        customer_id = _normalize_user_id(str(r.get('user_id')))
+        did = id_map.get(customer_id)
             if did and did not in discord_ids_needed:
                 discord_ids_needed.append(did)
 
