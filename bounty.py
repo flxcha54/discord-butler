@@ -8,6 +8,8 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import unicodedata
+import re
 
 
 POINTS_BY_CATEGORY: Dict[float, int] = {
@@ -105,6 +107,26 @@ def _parse_category_cell(value: object) -> Optional[float]:
     return None
 
 
+def _normalize_event_name(value: object) -> str:
+    """Normalize event names for matching across sources.
+
+    - Convert to str, strip, lowercase
+    - Unicode normalize and remove diacritics
+    - Keep only ASCII letters and digits [a-z0-9]
+    """
+    if value is None:
+        return ""
+    s = str(value).strip().lower()
+    if not s:
+        return ""
+    # Remove accents/diacritics
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    # Keep only letters and digits
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s
+
+
 def read_player_list(script_dir: str) -> List[str]:
     """Load allowed customer_ids from users_list.csv in the script directory.
 
@@ -145,6 +167,87 @@ def read_player_list(script_dir: str) -> List[str]:
     return user_ids
 
 
+def read_koseries_events_for_date(script_dir: str, target_date: dt.date) -> List[str]:
+    """Load event names from koseries_info.csv for the given date.
+    
+    Returns a list of event names that occurred on the target date.
+    """
+    path = os.path.join(script_dir, "koseries_info.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Required file not found: {path}. Place koseries_info.csv next to bounty.py"
+        )
+    
+    events_for_date = []
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if 'date' in row and 'name' in row:
+                try:
+                    # Parse date in DD/MM/YYYY format
+                    event_date = dt.datetime.strptime(row['date'], "%d/%m/%Y").date()
+                    if event_date == target_date:
+                        # Store normalized event name
+                        events_for_date.append(_normalize_event_name(row['name']))
+                except ValueError:
+                    # Skip rows with invalid date format
+                    continue
+    
+    return events_for_date
+
+
+def read_all_koseries_event_names(script_dir: str) -> List[str]:
+    """Load ALL event names from koseries_info.csv (normalized)."""
+    path = os.path.join(script_dir, "koseries_info.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Required file not found: {path}. Place koseries_info.csv next to bounty.py"
+        )
+    names: List[str] = []
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if 'name' in row and row['name']:
+                names.append(_normalize_event_name(row['name']))
+    # Deduplicate while preserving order
+    seen = set()
+    unique: List[str] = []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return unique
+
+
+def read_koseries_events_until_date(script_dir: str, target_date: dt.date) -> List[str]:
+    """Load event names (normalized) for all events with date <= target_date from koseries_info.csv."""
+    path = os.path.join(script_dir, "koseries_info.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Required file not found: {path}. Place koseries_info.csv next to bounty.py"
+        )
+    names: List[str] = []
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if 'name' not in row or 'date' not in row:
+                continue
+            try:
+                event_date = dt.datetime.strptime(row['date'], "%d/%m/%Y").date()
+            except Exception:
+                continue
+            if event_date <= target_date:
+                names.append(_normalize_event_name(row['name']))
+    # Deduplicate while preserving order
+    seen = set()
+    unique: List[str] = []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return unique
+
+
 def load_values_from_excel_sheet(excel_path: str, sheet_name: str) -> List[List[object]]:
     """Load all cell values from a given Excel sheet using pandas (no pivot refresh).
 
@@ -175,65 +278,64 @@ def compute_rankings_for_date(
     values: List[List[object]],
     target_date: dt.date,
     allowed_user_ids: List[str],
+    event_names: List[str],
 ) -> pd.DataFrame:
     """Compute ranking DataFrame for the given date from a values matrix.
 
-    The matrix follows the specified structure:
-    - This function now expects a per-date sheet, with categories on the header row
-      that contains 'Row Labels'. There is no separate date header row.
-    - Column 1: 'Row Labels' with user_ids, starting at row 9
-    - Remaining cells: elimination counts (numbers)
+    The matrix follows the new structure:
+    - Row 8: Event names as strings
+    - Row 9: Row Labels + categories as floats
+    - Data starts from row 10
     """
-    if not values or len(values) < 2:
+    if not values or len(values) < 10:
         raise ValueError("Input sheet appears too small to contain headers and data.")
 
     # Normalize row lengths (ragged rows can appear)
     max_cols = max(len(r) for r in values)
     grid: List[List[object]] = [r + [None] * (max_cols - len(r)) for r in values]
 
-    # Dynamically detect header layout: find the row containing 'Row Labels'
-    def _norm_str(v: object) -> str:
-        return str(v).strip().lower() if v is not None else ""
+    # Find event names row (row 8, index 7) and categories row (row 9, index 8)
+    event_names_row = grid[7] if len(grid) > 7 else []
+    categories_row = grid[8] if len(grid) > 8 else []
+    
+    # Find columns that match the event names for this date (using normalized comparison)
+    target_cols: List[int] = []
+    col_to_category: Dict[int, float] = {}
+    col_to_event_name: Dict[int, str] = {}
+    normalized_targets = { _normalize_event_name(n) for n in event_names }
+    
+    for col_idx in range(len(event_names_row)):
+        if col_idx < len(categories_row):
+            event_name = str(event_names_row[col_idx]).strip() if event_names_row[col_idx] else ""
+            category = _parse_category_cell(categories_row[col_idx])
+            normalized_event_name = _normalize_event_name(event_name)
+            # Check if this event name (normalized) is in our target events for this date
+            if normalized_event_name in normalized_targets and category is not None:
+                target_cols.append(col_idx)
+                col_to_category[col_idx] = float(category)
+                col_to_event_name[col_idx] = event_name
 
-    category_row_idx = None
-    row_labels_col_idx = None
-    for r_idx, row in enumerate(grid):
-        for c_idx, cell in enumerate(row):
-            if _norm_str(cell) == "row labels":
-                category_row_idx = r_idx
-                row_labels_col_idx = c_idx
-                break
-        if category_row_idx is not None:
-            break
-    if category_row_idx is None:
-        raise ValueError("Could not locate 'Row Labels' header in the sheet.")
-
-    # Parse categories from the header row (same row as 'Row Labels')
-    start_col = (row_labels_col_idx or 0) + 1
-    categories: List[Optional[float]] = [None] * max_cols
-    for col in range(start_col, max_cols):
-        categories[col] = _parse_category_cell(grid[category_row_idx][col])
-
-    # Use all columns that have a valid numeric category
-    target_cols: List[int] = [c for c in range(start_col, max_cols) if categories[c] is not None]
     if not target_cols:
+        # No matching events found, return empty dataframe with 0 points
         df = pd.DataFrame({"user_id": allowed_user_ids, "points": [0] * len(allowed_user_ids)})
         df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
         df.insert(0, "rank", range(1, len(df) + 1))
         return df.reset_index(drop=True)
 
-    col_to_category: Dict[int, float] = {c: float(categories[c]) for c in target_cols if categories[c] is not None}
-
-    # Build user_id -> points
+    # Build user_id -> points and detailed bounty counts
     points_by_user: Dict[str, float] = {uid: 0.0 for uid in allowed_user_ids}
+    bounty_counts_by_user: Dict[str, Dict[float, int]] = {uid: {} for uid in allowed_user_ids}
+    total_bounties_by_user: Dict[str, int] = {uid: 0 for uid in allowed_user_ids}
 
-    # Iterate player rows starting at row index 8 (row 9 in 1-based)
-    data_start_row = category_row_idx + 1
+    # Iterate player rows starting from row 10 (index 9)
+    data_start_row = 9
     for row_idx in range(data_start_row, len(grid)):
         row = grid[row_idx]
         if not row:
             continue
-        user_id_cell = row[row_labels_col_idx or 0] if len(row) > (row_labels_col_idx or 0) else None
+        
+        # Get user_id from first column (Row Labels column)
+        user_id_cell = row[0] if len(row) > 0 else None
         user_id = _normalize_user_id(user_id_cell)
         if not user_id:
             continue
@@ -242,7 +344,9 @@ def compute_rankings_for_date(
             continue
 
         total_points = 0.0
-        for col_idx, category in col_to_category.items():
+        total_bounties = 0
+        
+        for col_idx in target_cols:
             raw_val = row[col_idx] if col_idx < len(row) else None
             # Treat empty/invalid/NaN as 0
             try:
@@ -251,15 +355,49 @@ def compute_rankings_for_date(
                     count = 0.0
             except Exception:
                 count = 0.0
+            
+            category = col_to_category[col_idx]
+            total_bounties += int(count)
+            
+            # Store bounty count by category
+            if category not in bounty_counts_by_user[user_id]:
+                bounty_counts_by_user[user_id][category] = 0
+            bounty_counts_by_user[user_id][category] += int(count)
+            
             # Category points per spec
             per_elim_points = POINTS_BY_CATEGORY.get(round(category, 4), 0)
             total_points += count * per_elim_points
+        
         points_by_user[user_id] = total_points
+        total_bounties_by_user[user_id] = total_bounties
 
-    df = pd.DataFrame(
-        {"user_id": list(points_by_user.keys()), "points": list(points_by_user.values())}
-    )
+    # Create detailed DataFrame with bounty breakdown
+    data_rows = []
+    for user_id in allowed_user_ids:
+        if points_by_user[user_id] > 0:  # Only include users with points
+            row_data = {
+                "user_id": user_id,
+                "points": points_by_user[user_id],
+                "primes gagnées": total_bounties_by_user[user_id],
+                "primes gagnées 1€": bounty_counts_by_user[user_id].get(0.1, 0),
+                "primes gagnées 3€": bounty_counts_by_user[user_id].get(0.3, 0),
+                "primes gagnées 5€": bounty_counts_by_user[user_id].get(0.5, 0),
+                "primes gagnées 10€": bounty_counts_by_user[user_id].get(1.0, 0),
+                "primes gagnées 20€": bounty_counts_by_user[user_id].get(2.0, 0),
+                "primes gagnées 50€": bounty_counts_by_user[user_id].get(5.0, 0),
+                "primes gagnées 100€": bounty_counts_by_user[user_id].get(10.0, 0),
+            }
+            data_rows.append(row_data)
+
+    if not data_rows:
+        # No users with points, return empty dataframe
+        return pd.DataFrame(columns=["rank", "user_id", "points", "primes gagnées", 
+                                   "primes gagnées 1€", "primes gagnées 3€", "primes gagnées 5€",
+                                   "primes gagnées 10€", "primes gagnées 20€", "primes gagnées 50€", "primes gagnées 100€"])
+
+    df = pd.DataFrame(data_rows)
     df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
+    
     # Assign competition ranks: ties share rank, next rank skips by tie size (1,1,3,...)
     ranks: List[int] = []
     last_points: Optional[float] = None
@@ -276,66 +414,55 @@ def compute_rankings_for_date(
 
 
 def compute_unfiltered_rankings_for_date(
-    values: List[List[object]], target_date: dt.date
+    values: List[List[object]], target_date: dt.date, event_names: List[str]
 ) -> pd.DataFrame:
     """Compute ranking DataFrame for the given date without filtering by player_list.csv."""
-    if not values or len(values) < 2:
+    if not values or len(values) < 10:
         raise ValueError("Input sheet appears too small to contain headers and data.")
 
     max_cols = max(len(r) for r in values)
     grid: List[List[object]] = [r + [None] * (max_cols - len(r)) for r in values]
 
-    # Detect 'Row Labels' position
-    def _norm_str(v: object) -> str:
-        return str(v).strip().lower() if v is not None else ""
+    # Find event names row (row 8, index 7) and categories row (row 9, index 8)
+    event_names_row = grid[7] if len(grid) > 7 else []
+    categories_row = grid[8] if len(grid) > 8 else []
+    
+    # Find columns that match the event names for this date (using normalized comparison)
+    target_cols: List[int] = []
+    col_to_category: Dict[int, float] = {}
+    normalized_targets = { _normalize_event_name(n) for n in event_names }
+    
+    for col_idx in range(len(event_names_row)):
+        if col_idx < len(categories_row):
+            event_name = str(event_names_row[col_idx]).strip() if event_names_row[col_idx] else ""
+            category = _parse_category_cell(categories_row[col_idx])
+            normalized_event_name = _normalize_event_name(event_name)
+            # Check if this event name (normalized) is in our target events for this date
+            if normalized_event_name in normalized_targets and category is not None:
+                target_cols.append(col_idx)
+                col_to_category[col_idx] = float(category)
 
-    category_row_idx = None
-    row_labels_col_idx = None
-    for r_idx, row in enumerate(grid):
-        for c_idx, cell in enumerate(row):
-            if _norm_str(cell) == "row labels":
-                category_row_idx = r_idx
-                row_labels_col_idx = c_idx
-                break
-        if category_row_idx is not None:
-            break
-    if category_row_idx is None:
-        raise ValueError("Could not locate 'Row Labels' header in the sheet.")
-    # No date header row; categories are on the same row as 'Row Labels'
-    start_col = (row_labels_col_idx or 0) + 1
-    categories: List[Optional[float]] = [None] * max_cols
-    for col in range(start_col, max_cols):
-        categories[col] = _parse_category_cell(grid[category_row_idx][col])
-
-    target_cols: List[int] = [c for c in range(start_col, max_cols) if categories[c] is not None]
     if not target_cols:
-        user_ids: List[str] = []
-        data_start_row = category_row_idx + 1
-        for row_idx in range(data_start_row, len(grid)):
-            row = grid[row_idx]
-            if not row:
-                continue
-            uid = _normalize_user_id(row[row_labels_col_idx or 0] if len(row) > (row_labels_col_idx or 0) else None)
-            if uid:
-                user_ids.append(uid)
-        user_ids = sorted(set(user_ids))
-        df0 = pd.DataFrame({"user_id": user_ids, "points": [0] * len(user_ids)})
-        df0.insert(0, "rank", [1] * len(df0))
-        return df0
-
-    col_to_category: Dict[int, float] = {c: float(categories[c]) for c in target_cols if categories[c] is not None}
+        # No matching events found, return empty dataframe
+        return pd.DataFrame(columns=["rank", "user_id", "points"])
 
     points_by_user: Dict[str, float] = {}
-    data_start_row = category_row_idx + 1
+    
+    # Iterate player rows starting from row 10 (index 9)
+    data_start_row = 9
     for row_idx in range(data_start_row, len(grid)):
         row = grid[row_idx]
         if not row:
             continue
-        user_id = _normalize_user_id(row[row_labels_col_idx or 0] if len(row) > (row_labels_col_idx or 0) else None)
+        
+        # Get user_id from first column (Row Labels column)
+        user_id_cell = row[0] if len(row) > 0 else None
+        user_id = _normalize_user_id(user_id_cell)
         if not user_id:
             continue
+        
         total_points = 0.0
-        for col_idx, category in col_to_category.items():
+        for col_idx in target_cols:
             raw_val = row[col_idx] if col_idx < len(row) else None
             try:
                 count = float(raw_val) if raw_val not in (None, "", "nan", "NaN") else 0.0
@@ -343,14 +470,18 @@ def compute_unfiltered_rankings_for_date(
                     count = 0.0
             except Exception:
                 count = 0.0
+            
+            category = col_to_category[col_idx]
             per_elim_points = POINTS_BY_CATEGORY.get(round(category, 4), 0)
             total_points += count * per_elim_points
+        
         points_by_user[user_id] = total_points
 
     df = pd.DataFrame(
         {"user_id": list(points_by_user.keys()), "points": list(points_by_user.values())}
     )
     df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
+    
     # Competition ranking for ties
     ranks: List[int] = []
     last_points: Optional[float] = None
@@ -370,6 +501,165 @@ def write_csv(df: pd.DataFrame, output_path: str) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     df.to_csv(output_path, index=False)
 
+
+def list_koseries_sheets(excel_path: str) -> List[str]:
+    """Return sheet names starting with 'koseries_' from the workbook."""
+    try:
+        xls = pd.ExcelFile(excel_path)
+    except ImportError as exc:
+        raise RuntimeError(
+            "Reading .xlsx requires an engine like 'openpyxl'. Install via 'pip install openpyxl'."
+        ) from exc
+    return [name for name in xls.sheet_names if str(name).lower().startswith("koseries_")]
+
+
+def _accumulate_from_grid(
+    grid: List[List[object]], event_names: List[str], accumulator: Dict[str, Dict[float, int]]
+) -> None:
+    """Accumulate bounty counts per user per category from a single grid.
+
+    Uses normalized name matching and the assumed layout (row 8 names, row 9 categories, data from row 10).
+    """
+    if not grid or len(grid) < 10:
+        return
+    max_cols = max(len(r) for r in grid)
+    grid = [r + [None] * (max_cols - len(r)) for r in grid]
+
+    event_names_row = grid[7] if len(grid) > 7 else []
+    categories_row = grid[8] if len(grid) > 8 else []
+    normalized_targets = { _normalize_event_name(n) for n in event_names }
+
+    target_cols: List[int] = []
+    col_to_category: Dict[int, float] = {}
+    for col_idx in range(len(event_names_row)):
+        if col_idx < len(categories_row):
+            event_name = str(event_names_row[col_idx]).strip() if event_names_row[col_idx] else ""
+            category = _parse_category_cell(categories_row[col_idx])
+            normalized_event_name = _normalize_event_name(event_name)
+            if normalized_event_name in normalized_targets and category is not None:
+                target_cols.append(col_idx)
+                col_to_category[col_idx] = float(category)
+
+    if not target_cols:
+        return
+
+    data_start_row = 9
+    for row_idx in range(data_start_row, len(grid)):
+        row = grid[row_idx]
+        if not row:
+            continue
+        user_id_cell = row[0] if len(row) > 0 else None
+        user_id = _normalize_user_id(user_id_cell)
+        if not user_id:
+            continue
+
+        for col_idx in target_cols:
+            raw_val = row[col_idx] if col_idx < len(row) else None
+            try:
+                count = float(raw_val) if raw_val not in (None, "", "nan", "NaN") else 0.0
+                if count != count:
+                    count = 0.0
+            except Exception:
+                count = 0.0
+            if count == 0.0:
+                continue
+            category = col_to_category[col_idx]
+            if user_id not in accumulator:
+                accumulator[user_id] = {}
+            accumulator[user_id][category] = accumulator[user_id].get(category, 0) + int(count)
+
+
+def aggregate_user_category_counts(
+    excel_path: str, sheet_names: List[str], event_names: List[str]
+) -> Dict[str, Dict[float, int]]:
+    """Read all provided sheets and aggregate bounty counts per user per category."""
+    aggregates: Dict[str, Dict[float, int]] = {}
+    for name in sheet_names:
+        # Load grid for this sheet
+        try:
+            df = pd.read_excel(excel_path, sheet_name=name, header=None, engine=None)
+        except ValueError:
+            continue
+        grid: List[List[object]] = df.where(pd.notna(df), None).values.tolist()
+        _accumulate_from_grid(grid, event_names, aggregates)
+    return aggregates
+
+
+def compute_filtered_df_from_aggregates(
+    aggregates: Dict[str, Dict[float, int]], allowed_user_ids: List[str]
+) -> pd.DataFrame:
+    points_by_user: Dict[str, float] = {uid: 0.0 for uid in allowed_user_ids}
+    total_bounties_by_user: Dict[str, int] = {uid: 0 for uid in allowed_user_ids}
+
+    for uid in allowed_user_ids:
+        cat_counts = aggregates.get(uid, {})
+        if not cat_counts:
+            continue
+        total_points = 0.0
+        total_bounties = 0
+        for category, count in cat_counts.items():
+            per_elim_points = POINTS_BY_CATEGORY.get(round(float(category), 4), 0)
+            total_points += float(count) * per_elim_points
+            total_bounties += int(count)
+        points_by_user[uid] = total_points
+        total_bounties_by_user[uid] = total_bounties
+
+    data_rows = []
+    for uid in allowed_user_ids:
+        if points_by_user[uid] > 0:
+            data_rows.append({
+                "user_id": uid,
+                "points": points_by_user[uid],
+                "primes gagnées": total_bounties_by_user[uid],
+            })
+
+    if not data_rows:
+        return pd.DataFrame(columns=[
+            "rank", "user_id", "points", "primes gagnées"
+        ])
+
+    df = pd.DataFrame(data_rows)
+    df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
+    ranks: List[int] = []
+    last_points: Optional[float] = None
+    current_rank = 0
+    position = 0
+    for pts in df["points"].tolist():
+        position += 1
+        if last_points is None or pts != last_points:
+            current_rank = position
+            last_points = pts
+        ranks.append(current_rank)
+    df.insert(0, "rank", ranks)
+    return df.reset_index(drop=True)
+
+
+def compute_unfiltered_df_from_aggregates(
+    aggregates: Dict[str, Dict[float, int]]
+) -> pd.DataFrame:
+    if not aggregates:
+        return pd.DataFrame(columns=["rank", "user_id", "points"])
+    rows = []
+    for uid, cat_counts in aggregates.items():
+        total_points = 0.0
+        for category, count in cat_counts.items():
+            per_elim_points = POINTS_BY_CATEGORY.get(round(float(category), 4), 0)
+            total_points += float(count) * per_elim_points
+        rows.append({"user_id": uid, "points": total_points})
+    df = pd.DataFrame(rows)
+    df.sort_values(["points", "user_id"], ascending=[False, True], inplace=True)
+    ranks: List[int] = []
+    last_points: Optional[float] = None
+    current_rank = 0
+    position = 0
+    for pts in df["points"].tolist():
+        position += 1
+        if last_points is None or pts != last_points:
+            current_rank = position
+            last_points = pts
+        ranks.append(current_rank)
+    df.insert(0, "rank", ranks)
+    return df.reset_index(drop=True)
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -426,38 +716,55 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     except ValueError as exc:
         raise SystemExit("--date must be in DD/MM/YYYY format") from exc
 
-    # Derive per-date sheet name like 'DD_MM_YYYY'
-    sheet_name = target_date.strftime("%d_%m_%Y")
-
-    # Load player list
+    # Load player list and event names for the date
     script_dir = os.path.dirname(os.path.abspath(__file__))
     allowed_user_ids = read_player_list(script_dir)
     if not allowed_user_ids:
         raise SystemExit("users_list.csv is empty or missing valid customer ids")
+    
+    # Get event names for this date from koseries_info.csv
+    event_names = read_koseries_events_for_date(script_dir, target_date)
+    # Also load ALL koseries event names up to and including the target date (for the general ranking)
+    all_event_names_until = read_koseries_events_until_date(script_dir, target_date)
+    if not event_names and not all_event_names_until:
+        print(f"No events found in koseries_info.csv")
+        return pd.DataFrame()
 
-    # Read matrix from the per-date sheet; error if missing
-    values = load_values_from_excel_sheet(excel_path, sheet_name)
+    # Discover all koseries_* sheets and aggregate counts across them
+    sheet_names = list_koseries_sheets(excel_path)
+    if not sheet_names:
+        raise SystemExit("No sheets starting with 'koseries_' found in the Excel workbook")
+    aggregates = aggregate_user_category_counts(excel_path, sheet_names, event_names)
+    aggregates_all = aggregate_user_category_counts(excel_path, sheet_names, all_event_names_until)
 
-    # Compute
-    df = compute_rankings_for_date(values, target_date, allowed_user_ids)
-    # Also compute general (unfiltered) rankings
-    general_df = compute_unfiltered_rankings_for_date(values, target_date)
+    # Compute rankings from aggregates
+    df = compute_filtered_df_from_aggregates(aggregates, allowed_user_ids)
+    general_df = compute_unfiltered_df_from_aggregates(aggregates)
+    # General filtered ranking for ALL events (only users_list)
+    general_all_df = compute_filtered_df_from_aggregates(aggregates_all, allowed_user_ids)
 
-    # Output
+    # Output with new naming convention
     out_path = args.out
     if out_path is None:
-        out_name = f"rankings_{target_date.strftime('%d-%m-%Y')}.csv"
+        out_name = f"classement_koseries_{target_date.strftime('%d-%m-%Y')}.csv"
         out_path = os.path.join(os.getcwd(), out_name)
     write_csv(df, out_path)
     # Write general rankings alongside, using a parallel filename
-    general_out_path = out_path.replace("rankings_", "rankings_general_")
+    general_out_path = out_path.replace("classement_koseries_", "rankings_general_")
     write_csv(general_df, general_out_path)
+    # Write general filtered (all events until date) ranking
+    general_filtered_all_out_path = os.path.join(
+        os.getcwd(), f"classement_général_{target_date.strftime('%d-%m-%Y')}.csv"
+    )
+    write_csv(general_all_df, general_filtered_all_out_path)
 
     # Display summary
     print("Filtered (users_list) rankings:\n" + df.to_string(index=False))
     print(f"\nWrote CSV: {out_path}")
     print("\nGeneral rankings (unfiltered):\n" + general_df.to_string(index=False))
     print(f"\nWrote CSV: {general_out_path}")
+    print("\nGeneral rankings (users_list, ALL koseries events):\n" + general_all_df.to_string(index=False))
+    print(f"\nWrote CSV: {general_filtered_all_out_path}")
 
     return df
 
