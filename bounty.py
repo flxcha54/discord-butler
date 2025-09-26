@@ -219,6 +219,35 @@ def read_all_koseries_event_names(script_dir: str) -> List[str]:
     return unique
 
 
+def read_koseries_events_until_date(script_dir: str, target_date: dt.date) -> List[str]:
+    """Load event names (normalized) for all events with date <= target_date from koseries_info.csv."""
+    path = os.path.join(script_dir, "koseries_info.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Required file not found: {path}. Place koseries_info.csv next to bounty.py"
+        )
+    names: List[str] = []
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if 'name' not in row or 'date' not in row:
+                continue
+            try:
+                event_date = dt.datetime.strptime(row['date'], "%d/%m/%Y").date()
+            except Exception:
+                continue
+            if event_date <= target_date:
+                names.append(_normalize_event_name(row['name']))
+    # Deduplicate while preserving order
+    seen = set()
+    unique: List[str] = []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            unique.append(n)
+    return unique
+
+
 def load_values_from_excel_sheet(excel_path: str, sheet_name: str) -> List[List[object]]:
     """Load all cell values from a given Excel sheet using pandas (no pivot refresh).
 
@@ -695,9 +724,9 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     
     # Get event names for this date from koseries_info.csv
     event_names = read_koseries_events_for_date(script_dir, target_date)
-    # Also load ALL koseries event names (for the general/all-events ranking)
-    all_event_names = read_all_koseries_event_names(script_dir)
-    if not event_names and not all_event_names:
+    # Also load ALL koseries event names up to and including the target date (for the general ranking)
+    all_event_names_until = read_koseries_events_until_date(script_dir, target_date)
+    if not event_names and not all_event_names_until:
         print(f"No events found in koseries_info.csv")
         return pd.DataFrame()
 
@@ -706,7 +735,7 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     if not sheet_names:
         raise SystemExit("No sheets starting with 'koseries_' found in the Excel workbook")
     aggregates = aggregate_user_category_counts(excel_path, sheet_names, event_names)
-    aggregates_all = aggregate_user_category_counts(excel_path, sheet_names, all_event_names)
+    aggregates_all = aggregate_user_category_counts(excel_path, sheet_names, all_event_names_until)
 
     # Compute rankings from aggregates
     df = compute_filtered_df_from_aggregates(aggregates, allowed_user_ids)
@@ -723,7 +752,7 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     # Write general rankings alongside, using a parallel filename
     general_out_path = out_path.replace("classement_koseries_", "rankings_general_")
     write_csv(general_df, general_out_path)
-    # Write general filtered (all events) ranking
+    # Write general filtered (all events until date) ranking
     general_filtered_all_out_path = os.path.join(
         os.getcwd(), f"classement_général_{target_date.strftime('%d-%m-%Y')}.csv"
     )
