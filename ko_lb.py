@@ -279,7 +279,7 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner
                     else:
                         print(f"Error posting banner: {response.status} - {await response.text()}")
 
-            # 2) Send embed with leaderboard and button, optionally with attachment(s) in same message
+            # 2) Send embed with leaderboard and button (no attachments here)
             headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
             payload = {
                 'embeds': [
@@ -303,31 +303,32 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner
                     }
                 ]
             }
-            if attachments:
-                form_data = aiohttp.FormData()
-                form_data.add_field('payload_json', json.dumps(payload), content_type='application/json')
-                for idx, (filename, content, content_type) in enumerate(attachments):
-                    form_data.add_field(f'files[{idx}]', content, filename=filename, content_type=content_type)
-                async with session.post(url, headers={'Authorization': f'Bot {token}'}, data=form_data) as response:
-                    if response.status == 200:
-                        print("Leaderboard embed + attachment posted successfully!")
-                    else:
-                        print(f"Error posting embed+file: {response.status} - {await response.text()}")
-            else:
-                async with session.post(url, headers=headers_json, json=payload) as response:
-                    if response.status == 200:
-                        print("Leaderboard embed posted successfully!")
-                    else:
-                        print(f"Error posting embed: {response.status} - {await response.text()}")
+            async with session.post(url, headers=headers_json, json=payload) as response:
+                if response.status == 200:
+                    print("Leaderboard embed posted successfully!")
+                else:
+                    print(f"Error posting embed: {response.status} - {await response.text()}")
 
             # 3) Send congratulations text, if any
             if congrats_text:
-                data = {'content': congrats_text}
-                async with session.post(url, headers=headers_json, json=data) as response:
-                    if response.status == 200:
-                        print("Congratulations message posted successfully!")
-                    else:
-                        print(f"Error posting congratulations: {response.status} - {await response.text()}")
+                if attachments:
+                    # Send congratulations with the ZIP attachment(s)
+                    form_data = aiohttp.FormData()
+                    form_data.add_field('payload_json', json.dumps({'content': congrats_text}), content_type='application/json')
+                    for idx, (filename, content, content_type) in enumerate(attachments):
+                        form_data.add_field(f'files[{idx}]', content, filename=filename, content_type=content_type)
+                    async with session.post(url, headers={'Authorization': f'Bot {token}'}, data=form_data) as response:
+                        if response.status == 200:
+                            print("Congratulations + attachment posted successfully!")
+                        else:
+                            print(f"Error posting congratulations+file: {response.status} - {await response.text()}")
+                else:
+                    data = {'content': congrats_text}
+                    async with session.post(url, headers=headers_json, json=data) as response:
+                        if response.status == 200:
+                            print("Congratulations message posted successfully!")
+                        else:
+                            print(f"Error posting congratulations: {response.status} - {await response.text()}")
         except Exception as e:
             print(f"Error posting to Discord: {e}")
 
