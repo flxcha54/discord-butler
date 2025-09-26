@@ -4,6 +4,7 @@ import asyncio
 import csv
 import datetime as dt
 import os
+import json
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -19,6 +20,10 @@ BANNER_FILENAME: str = "banner.png"  # TODO: replace with your banner filename
 
 # Discord bot token (replace with your actual bot token)
 DISCORD_BOT_TOKEN: str = "YOUR_BOT_TOKEN_HERE"
+
+# Optional: external link button under the embed
+DISCORD_BUTTON_LABEL: str = "Voir tous les classements"
+DISCORD_BUTTON_URL: str = "https://example.com/ko-series"  # replace with your link
 
 
 def _script_dir() -> str:
@@ -77,6 +82,78 @@ def _run_bounty_and_get_df(target_date: dt.date) -> pd.DataFrame:
     # Call bounty.main; it returns the filtered dataframe
     df: pd.DataFrame = bounty.main(["--date", date_str])  # type: ignore
     return df
+
+
+async def _fetch_display_names(token: str, guild_id: int, discord_ids: List[str]) -> Dict[str, str]:
+    """Fetch server display names for a list of discord user IDs in a guild.
+    Returns mapping discord_id -> display_name (prefers nick, then global_name, then username).
+    Missing users are omitted.
+    """
+    import aiohttp
+    headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+    base_url = f'https://discord.com/api/v10/guilds/{guild_id}/members'
+    names: Dict[str, str] = {}
+    async with aiohttp.ClientSession() as session:
+        for uid in discord_ids:
+            if not uid:
+                continue
+            try:
+                url = f"{base_url}/{uid}"
+                async with session.get(url, headers=headers_json) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+                    nick = data.get('nick')
+                    user = data.get('user') or {}
+                    global_name = user.get('global_name')
+                    username = user.get('username')
+                    display = nick or global_name or username
+                    if display:
+                        names[uid] = str(display)
+            except Exception:
+                continue
+    return names
+
+
+def _build_name_mapping_for_rankings(
+    df_list: List[pd.DataFrame], customer_to_discord: Dict[str, str], discord_to_display: Dict[str, str]
+) -> Dict[str, str]:
+    """Map ranking 'user_id' (customer_id) to guild display names using users_list and fetched member names.
+    Fallback to mention or raw id if missing.
+    Returns mapping customer_id -> display_name.
+    """
+    mapping: Dict[str, str] = {}
+    for df in df_list:
+        if df is None or df.empty:
+            continue
+        for _, r in df.iterrows():
+            customer_id = str(r.get('user_id'))
+            if not customer_id:
+                continue
+            discord_id = customer_to_discord.get(customer_id)
+            display = None
+            if discord_id:
+                display = discord_to_display.get(discord_id)
+            if not display:
+                # As a last resort keep the original ID for traceability
+                display = f"ID:{customer_id}"
+            mapping[customer_id] = display
+    return mapping
+
+
+def _transform_ranking_df_for_names(df: pd.DataFrame, customer_to_name: Dict[str, str]) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    df2 = df.copy()
+    # Rename columns
+    if 'rank' in df2.columns:
+        df2 = df2.rename(columns={'rank': 'classement'})
+    # Replace user_id with 'nom'
+    df2['nom'] = df2['user_id'].astype(str).map(lambda x: customer_to_name.get(str(x), f"ID:{x}"))
+    # Reorder: classement, nom, points, rest...
+    cols = ['classement', 'nom'] + [c for c in df2.columns if c not in ('classement', 'nom', 'user_id')]
+    df2 = df2[cols]
+    return df2
 
 
 def _format_leaderboard(df: pd.DataFrame, date_str: str, id_map: Dict[str, str]) -> Tuple[str, str, List[Tuple[int, str, float]]]:
@@ -146,7 +223,7 @@ def _build_congratulations(rows: List[Tuple[int, str, float]]) -> str:
     return "\n".join(lines)
 
 
-async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner_path: Optional[str], embed_title: str, embed_description: str, congrats_text: str) -> None:
+async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner_path: Optional[str], embed_title: str, embed_description: str, congrats_text: str, attachments: Optional[List[Tuple[str, bytes]]] = None) -> None:
     import aiohttp
 
     url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
@@ -166,18 +243,35 @@ async def _post_to_discord(token: str, guild_id: int, channel_id: int, *, banner
                     else:
                         print(f"Error posting banner: {response.status} - {await response.text()}")
 
-            # 2) Send embed with leaderboard
-            headers_json = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
-            embed_payload = {
+            # 2) Send embed with leaderboard and button, optionally with CSV attachments in one message
+            form_data = aiohttp.FormData()
+            payload = {
                 'embeds': [
                     {
                         'title': embed_title,
                         'description': embed_description,
                         'color': 0x00AEEF
                     }
+                ],
+                'components': [
+                    {
+                        'type': 1,  # action row
+                        'components': [
+                            {
+                                'type': 2,  # button
+                                'style': 5,  # link style
+                                'label': DISCORD_BUTTON_LABEL,
+                                'url': DISCORD_BUTTON_URL
+                            }
+                        ]
+                    }
                 ]
             }
-            async with session.post(url, headers=headers_json, json=embed_payload) as response:
+            form_data.add_field('payload_json', json.dumps(payload), content_type='application/json')
+            if attachments:
+                for idx, (filename, content) in enumerate(attachments):
+                    form_data.add_field(f'files[{idx}]', content, filename=filename, content_type='text/csv')
+            async with session.post(url, headers=headers, data=form_data) as response:
                 if response.status == 200:
                     print("Leaderboard embed posted successfully!")
                 else:
@@ -229,17 +323,53 @@ def main() -> None:
     embed_title, embed_description, rows = _format_leaderboard(df, date_str, id_map)
     congrats_text = _build_congratulations(rows)
 
-    # Discord
+    # Prepare processed CSVs with display names for the two rankings
+    # Read classement_koseries and classement_général for the date
+    koseries_csv_path = os.path.join(os.getcwd(), f"classement_koseries_{target_date.strftime('%d-%m-%Y')}.csv")
+    general_csv_path = os.path.join(os.getcwd(), f"classement_général_{target_date.strftime('%d-%m-%Y')}.csv")
+    koseries_df = pd.read_csv(koseries_csv_path) if os.path.exists(koseries_csv_path) else pd.DataFrame()
+    general_df = pd.read_csv(general_csv_path) if os.path.exists(general_csv_path) else pd.DataFrame()
+
+    # Collect discord IDs to fetch names
+    discord_ids_needed: List[str] = []
+    for source_df in (koseries_df, general_df):
+        if source_df is None or source_df.empty:
+            continue
+        for _, r in source_df.iterrows():
+            customer_id = str(r.get('user_id'))
+            did = id_map.get(customer_id)
+            if did and did not in discord_ids_needed:
+                discord_ids_needed.append(did)
+
+    # Fetch display names
     token = DISCORD_BOT_TOKEN.strip()
     if not token or token == "YOUR_BOT_TOKEN_HERE":
         raise SystemExit(
             "Please replace 'YOUR_BOT_TOKEN_HERE' with your actual Discord bot token in ko_lb.py"
         )
+    discord_to_display = asyncio.get_event_loop().run_until_complete(
+        _fetch_display_names(token, GUILD_ID, discord_ids_needed)
+    )
 
+    # Build customer_id -> display name mapping
+    customer_to_name = _build_name_mapping_for_rankings([koseries_df, general_df], id_map, discord_to_display)
+
+    # Transform dataframes
+    koseries_named_df = _transform_ranking_df_for_names(koseries_df, customer_to_name)
+    general_named_df = _transform_ranking_df_for_names(general_df, customer_to_name)
+
+    # Serialize to CSV bytes for attachments
+    attachments: List[Tuple[str, bytes]] = []
+    if not koseries_named_df.empty:
+        attachments.append((f"classement_koseries_{target_date.strftime('%d-%m-%Y')}_noms.csv", koseries_named_df.to_csv(index=False).encode('utf-8')))
+    if not general_named_df.empty:
+        attachments.append((f"classement_général_{target_date.strftime('%d-%m-%Y')}_noms.csv", general_named_df.to_csv(index=False).encode('utf-8')))
+
+    # Discord
     banner_path = os.path.join(base_dir, BANNER_FILENAME) if BANNER_FILENAME else None
 
     # Post
-    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, banner_path=banner_path, embed_title=embed_title, embed_description=embed_description, congrats_text=congrats_text))
+    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, banner_path=banner_path, embed_title=embed_title, embed_description=embed_description, congrats_text=congrats_text, attachments=attachments))
 
 
 if __name__ == "__main__":
