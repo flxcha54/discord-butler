@@ -403,46 +403,41 @@ def main() -> None:
             if did and did not in discord_ids_needed:
                 discord_ids_needed.append(did)
 
-    # Fetch display names
-    token = DISCORD_BOT_TOKEN.strip()
-    if not token or token == "YOUR_BOT_TOKEN_HERE":
-        raise SystemExit(
-            "Please replace 'YOUR_BOT_TOKEN_HERE' with your actual Discord bot token in ko_lb.py"
-        )
-    discord_to_display = asyncio.get_event_loop().run_until_complete(
-        _fetch_display_names(token, GUILD_ID, discord_ids_needed)
-    )
+    async def _orchestrate():
+        token = DISCORD_BOT_TOKEN.strip()
+        if not token or token == "YOUR_BOT_TOKEN_HERE":
+            raise SystemExit(
+                "Please replace 'YOUR_BOT_TOKEN_HERE' with your actual Discord bot token in ko_lb.py"
+            )
+        # Fetch display names
+        discord_to_display = await _fetch_display_names(token, GUILD_ID, discord_ids_needed)
+        # Build customer_id -> display name mapping
+        customer_to_name = _build_name_mapping_for_rankings([koseries_df, general_df], id_map, discord_to_display)
+        # Transform dataframes
+        koseries_named_df = _transform_ranking_df_for_names(koseries_df, customer_to_name)
+        general_named_df = _transform_ranking_df_for_names(general_df, customer_to_name)
+        # Serialize to CSV then ZIP both into a single archive
+        attachments_zip: Optional[List[Tuple[str, bytes, str]]] = None
+        if not koseries_named_df.empty or not general_named_df.empty:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+                if not koseries_named_df.empty:
+                    zf.writestr(
+                        f"classement_koseries_{target_date.strftime('%d-%m-%Y')}_noms.csv",
+                        koseries_named_df.to_csv(index=False)
+                    )
+                if not general_named_df.empty:
+                    zf.writestr(
+                        f"classement_général_{target_date.strftime('%d-%m-%Y')}_noms.csv",
+                        general_named_df.to_csv(index=False)
+                    )
+            zip_bytes = buffer.getvalue()
+            attachments_zip = [(f"classements_{target_date.strftime('%d-%m-%Y')}.zip", zip_bytes, 'application/zip')]
+        # Discord post
+        banner_path = os.path.join(base_dir, BANNER_FILENAME) if BANNER_FILENAME else None
+        await _post_to_discord(token, GUILD_ID, CHANNEL_ID, banner_path=banner_path, embed_title=embed_title, embed_description=embed_description, congrats_text=congrats_text, attachments=attachments_zip)
 
-    # Build customer_id -> display name mapping
-    customer_to_name = _build_name_mapping_for_rankings([koseries_df, general_df], id_map, discord_to_display)
-
-    # Transform dataframes
-    koseries_named_df = _transform_ranking_df_for_names(koseries_df, customer_to_name)
-    general_named_df = _transform_ranking_df_for_names(general_df, customer_to_name)
-
-    # Serialize to CSV then ZIP both into a single archive
-    attachments_zip: Optional[List[Tuple[str, bytes, str]]] = None
-    if not koseries_named_df.empty or not general_named_df.empty:
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-            if not koseries_named_df.empty:
-                zf.writestr(
-                    f"classement_koseries_{target_date.strftime('%d-%m-%Y')}_noms.csv",
-                    koseries_named_df.to_csv(index=False)
-                )
-            if not general_named_df.empty:
-                zf.writestr(
-                    f"classement_général_{target_date.strftime('%d-%m-%Y')}_noms.csv",
-                    general_named_df.to_csv(index=False)
-                )
-        zip_bytes = buffer.getvalue()
-        attachments_zip = [(f"classements_{target_date.strftime('%d-%m-%Y')}.zip", zip_bytes, 'application/zip')]
-
-    # Discord
-    banner_path = os.path.join(base_dir, BANNER_FILENAME) if BANNER_FILENAME else None
-
-    # Post
-    asyncio.run(_post_to_discord(token, GUILD_ID, CHANNEL_ID, banner_path=banner_path, embed_title=embed_title, embed_description=embed_description, congrats_text=congrats_text, attachments=attachments_zip))
+    asyncio.run(_orchestrate())
 
 
 if __name__ == "__main__":
