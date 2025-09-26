@@ -137,8 +137,10 @@ async def _fetch_display_names(token: str, guild_id: int, discord_ids: List[str]
                 try:
                     member = await guild.fetch_member(int(uid))
                     display = member.nick or getattr(member, 'display_name', None) or member.name
-                    if display:
-                        names[str(uid)] = str(display)
+                    # Ensure non-empty, usable string; fallback to username then id
+                    if not display or not str(display).strip():
+                        display = member.name or str(member.id)
+                    names[str(uid)] = str(display)
                 except Exception:
                     continue
         finally:
@@ -168,12 +170,15 @@ def _build_name_mapping_for_rankings(
             if not customer_id:
                 continue
             discord_id = customer_to_discord.get(customer_id)
-            display = None
+            resolved: str = ""
             if discord_id:
-                # Use fetched guild display name only (no mentions/ids in CSV)
-                display = discord_to_display.get(discord_id)
-            # Default to empty string if not found
-            mapping[customer_id] = display or ""
+                display = discord_to_display.get(discord_id, "")
+                # If missing or empty, fallback to mention so CSV is never blank
+                resolved = display if str(display).strip() else f"<@{discord_id}>"
+            else:
+                # No discord_id mapping; avoid raw IDs, use a neutral placeholder
+                resolved = "Inconnu"
+            mapping[customer_id] = resolved
     return mapping
 
 
@@ -184,8 +189,10 @@ def _transform_ranking_df_for_names(df: pd.DataFrame, customer_to_name: Dict[str
     # Rename columns
     if 'rank' in df2.columns:
         df2 = df2.rename(columns={'rank': 'classement'})
-    # Replace user_id with 'nom' using normalized id mapping; default to empty string
-    df2['nom'] = df2['user_id'].astype(str).map(lambda x: customer_to_name.get(_normalize_user_id(str(x)), ""))
+    # Replace user_id with 'nom' using normalized id mapping; ensure non-empty
+    df2['nom'] = df2['user_id'].astype(str).map(
+        lambda x: (customer_to_name.get(_normalize_user_id(str(x)), "") or "Inconnu")
+    )
     # Reorder: classement, nom, points, rest...
     cols = ['classement', 'nom'] + [c for c in df2.columns if c not in ('classement', 'nom', 'user_id')]
     df2 = df2[cols]
