@@ -94,9 +94,10 @@ def _parse_category_cell(value: object) -> Optional[float]:
         s = value.strip()
         if not s:
             return None
-        # Replace comma decimal, then extract the first numeric token
+        # Standardize decimal separator and remove internal whitespace for robust matching (e.g. '0, 50' → '0.50')
         s = s.replace(",", ".")
         import re
+        s = re.sub(r"\s+", "", s)
         m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
         if not m:
             return None
