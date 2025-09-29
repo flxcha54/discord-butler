@@ -89,7 +89,8 @@ def _parse_category_cell(value: object) -> Optional[float]:
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        # Normalize to canonical float rounded to 4 decimals to match POINTS_BY_CATEGORY keys
+        return round(float(value), 4)
     if isinstance(value, str):
         s = value.strip()
         if not s:
@@ -101,7 +102,7 @@ def _parse_category_cell(value: object) -> Optional[float]:
         if not m:
             return None
         try:
-            return float(m.group(0))
+            return round(float(m.group(0)), 4)
         except ValueError:
             return None
     return None
@@ -123,6 +124,8 @@ def _normalize_event_name(value: object) -> str:
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     # Keep only letters and digits
+    # Remove all whitespace and non-alphanumeric characters
+    s = re.sub(r"\s+", "", s)
     s = re.sub(r"[^a-z0-9]", "", s)
     return s
 
@@ -312,7 +315,7 @@ def compute_rankings_for_date(
             # Check if this event name (normalized) is in our target events for this date
             if normalized_event_name in normalized_targets and category is not None:
                 target_cols.append(col_idx)
-                col_to_category[col_idx] = float(category)
+                col_to_category[col_idx] = float(round(float(category), 4))
                 col_to_event_name[col_idx] = event_name
 
     if not target_cols:
@@ -364,8 +367,8 @@ def compute_rankings_for_date(
                 bounty_counts_by_user[user_id][category] = 0
             bounty_counts_by_user[user_id][category] += int(count)
             
-            # Category points per spec
-            per_elim_points = POINTS_BY_CATEGORY.get(round(category, 4), 0)
+            # Category points per spec (categories already rounded)
+            per_elim_points = POINTS_BY_CATEGORY.get(round(float(category), 4), 0)
             total_points += count * per_elim_points
         
         points_by_user[user_id] = total_points
@@ -440,7 +443,7 @@ def compute_unfiltered_rankings_for_date(
             # Check if this event name (normalized) is in our target events for this date
             if normalized_event_name in normalized_targets and category is not None:
                 target_cols.append(col_idx)
-                col_to_category[col_idx] = float(category)
+                col_to_category[col_idx] = float(round(float(category), 4))
 
     if not target_cols:
         # No matching events found, return empty dataframe
@@ -472,7 +475,7 @@ def compute_unfiltered_rankings_for_date(
                 count = 0.0
             
             category = col_to_category[col_idx]
-            per_elim_points = POINTS_BY_CATEGORY.get(round(category, 4), 0)
+            per_elim_points = POINTS_BY_CATEGORY.get(round(float(category), 4), 0)
             total_points += count * per_elim_points
         
         points_by_user[user_id] = total_points
@@ -538,7 +541,7 @@ def _accumulate_from_grid(
             normalized_event_name = _normalize_event_name(event_name)
             if normalized_event_name in normalized_targets and category is not None:
                 target_cols.append(col_idx)
-                col_to_category[col_idx] = float(category)
+                col_to_category[col_idx] = float(round(float(category), 4))
 
     if not target_cols:
         return
